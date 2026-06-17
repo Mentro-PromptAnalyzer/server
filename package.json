@@ -1,0 +1,30 @@
+{
+  "name": "mentro-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "vitest --run --passWithNoTests",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.105.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "js-tiktoken": "^1.0.21",
+    "node-fetch": "^2.7.0",
+    "puppeteer-core": "^24.42.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "devDependencies": {
+    "fast-check": "^4.1.1",
+    "prettier": "^3.8.3",
+    "vitest": "^3.2.1"
+  }
+}
