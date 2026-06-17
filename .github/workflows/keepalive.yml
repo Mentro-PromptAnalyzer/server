@@ -1,0 +1,20 @@
+name: Keepalive Ping
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping mentro-lucid-dust-3580.fly.dev
+        run: |
+          STATUS=$(curl --silent --max-time 10 --write-out "%{http_code}" --output /dev/null \
+            https://mentro-lucid-dust-3580.fly.dev/api/health || echo "DOWN")
+          if [ "$STATUS" = "DOWN" ] || [ "$STATUS" = "000" ]; then
+            echo "STATUS: DOWN — server did not respond"
+          else
+            echo "STATUS: OK — HTTP $STATUS"
+          fi
