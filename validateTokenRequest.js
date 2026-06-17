@@ -13,7 +13,11 @@ function validateTokenRequest(body) {
   }
   for (const msg of body.messages) {
     if (!msg || typeof msg.role !== 'string' || typeof msg.content !== 'string') {
-      return { valid: false, status: 400, message: 'each message must have role and content strings' };
+      return {
+        valid: false,
+        status: 400,
+        message: 'each message must have role and content strings',
+      };
     }
   }
   // Default model from provider registry when not provided

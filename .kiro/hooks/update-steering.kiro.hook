@@ -1,0 +1,12 @@
+{
+  "name": "Update Steering Docs",
+  "description": "Manually trigger Kiro to review the codebase and update all steering docs to reflect current state",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Review the current state of the Mentro server codebase (index.js, providerRegistry.js, validateTokenRequest.js, adapters/, package.json) and update the steering docs in .kiro/steering/ to reflect any changes. Specifically check: API endpoints, environment variables, allowed hostnames, rate limits, model names, provider list, dependencies, and file structure. Only update sections that are out of date — do not rewrite content that is still accurate."
+  }
+}

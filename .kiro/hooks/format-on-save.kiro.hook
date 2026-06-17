@@ -1,0 +1,13 @@
+{
+  "name": "Format on Agent Stop",
+  "description": "Runs prettier on all JS files when an agent session ends",
+  "version": "1",
+  "when": {
+    "type": "agentStop"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "npx prettier --write index.js adapters/ providerRegistry.js validateTokenRequest.js",
+    "timeout": 30
+  }
+}
