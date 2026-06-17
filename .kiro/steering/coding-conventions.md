@@ -58,6 +58,7 @@ New adapters go in `adapters/`. New routes go in `index.js`. Extract validation 
 - Validation failures → `400`. Auth failures → `401`. Rate limit → `429` with `Retry-After` header. Missing config → `503`. Unexpected errors → `500`.
 - Middleware order in `index.js`: CORS → `express.json()` → auth middleware → rate limiter → route handler.
 - Input size limits: `express.json({ limit: '256kb' })`. Don't increase this without reason.
+- CORS allows: any `http://localhost:<port>`, any `*.vercel.app`, and any `chrome-extension://<id>` origin. Add new allowed origins explicitly — never use a wildcard.
 
 ## Auth Middleware
 
@@ -125,5 +126,6 @@ Include relevant context (URL, strategy name, count, status code) but never log 
 
 - Prefer existing dependencies over adding new ones.
 - `node-fetch` v2 is used in adapters (CommonJS compatible). Use it for adapter HTTP calls.
-- Native `fetch` is used in `index.js` for auth verification (Node 18+ built-in). Keep this split consistent.
+- Native `fetch` is used in `index.js` for auth verification and Groq streaming (Node 18+ built-in). Keep this split consistent.
+- `puppeteer-core` is used (not full `puppeteer`) — it does not bundle Chromium. System Chromium is always required.
 - Pin new dependencies to exact versions in `package.json`.
