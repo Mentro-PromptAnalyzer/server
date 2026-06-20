@@ -71,7 +71,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // ---------------------------------------------------------------------------
-// Inference provider config — three-tier chain:
+// Inference provider config — four-tier chain:
 //
 //   Tier 1 (primary):  Cerebras free tier (gpt-oss-120b)
 //                      ~30 req/min, 1M tokens/day — free, no credit card.
@@ -82,15 +82,20 @@ const PORT = process.env.PORT || 3001;
 //                      30 req/min, 14,400 req/day — free.
 //                      Requires GROQ_API_KEY.
 //
-//   Tier 3 (last resort): Together AI paid (Llama-3.1-8B-Instruct-Turbo)
-//                         Dynamic limits, ~$0.10/1M tokens.
-//                         Requires TOGETHER_API_KEY.
+//   Tier 3 (fallback): Together AI paid (Llama-3.1-8B-Instruct-Turbo)
+//                      Dynamic limits, ~$0.10/1M tokens.
+//                      Requires TOGETHER_API_KEY.
 //
-// Tiers 2 and 3 activate automatically on primary/fallback 429 or 5xx.
-// Auth failures (401/403) are never retried — those are config problems.
+//   Tier 4 (last resort): OCI Generative AI (meta.llama-3.3-70b-instruct)
+//                         Free tier via OCI Always Free account.
+//                         Routes to us-chicago-1 from US West (San Jose).
+//                         Requires OCI_GENAI_API_KEY.
 //
-// Backward compat: if only GROQ_API_KEY is set, tier 1 = Groq, tier 3
-// is skipped — existing deployments keep working unchanged.
+// Each tier activates automatically when the previous returns any non-400/401
+// error. Auth failures (401) and bad requests (400) stop the chain immediately.
+//
+// Backward compat: if only GROQ_API_KEY is set, tier 1 = Groq, other tiers
+// are skipped — existing deployments keep working unchanged.
 // ---------------------------------------------------------------------------
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
@@ -100,6 +105,9 @@ const CEREBRAS_BASE_URL = 'https://api.cerebras.ai/v1';
 const CEREBRAS_MODEL = 'gpt-oss-120b';
 const TOGETHER_BASE_URL = 'https://api.together.xyz/v1';
 const TOGETHER_MODEL = 'meta-llama/Llama-3.1-8B-Instruct-Turbo';
+const OCI_BASE_URL =
+  'https://inference.generativeai.us-chicago-1.oci.oraclecloud.com/20231130/actions/v1';
+const OCI_MODEL = 'meta.llama-3.3-70b-instruct';
 
 // Build the provider chain — each entry is { base, key, model, name }.
 // Only include a tier if its key is set. Falls back gracefully at runtime.
@@ -129,6 +137,15 @@ if (process.env.TOGETHER_API_KEY) {
     base: TOGETHER_BASE_URL,
     key: process.env.TOGETHER_API_KEY,
     model: TOGETHER_MODEL,
+  });
+}
+
+if (process.env.OCI_GENAI_API_KEY) {
+  INFERENCE_CHAIN.push({
+    name: 'OCI Generative AI',
+    base: OCI_BASE_URL,
+    key: process.env.OCI_GENAI_API_KEY,
+    model: OCI_MODEL,
   });
 }
 
@@ -930,7 +947,7 @@ app.get('/api/fetch-share', async (req, res) => {
 // ---------------------------------------------------------------------------
 // POST /api/chat/stream
 // Streams assistant response as SSE events.
-// Tries providers in INFERENCE_CHAIN order: Cerebras → Groq → Together AI.
+// Tries providers in INFERENCE_CHAIN order: Cerebras → Groq → Together AI → OCI Generative AI.
 // Each tier is attempted on 429 (rate limited) or 5xx (server error).
 // Auth failures (401/403) surface immediately without retrying.
 // ---------------------------------------------------------------------------
