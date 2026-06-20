@@ -73,9 +73,9 @@ const PORT = process.env.PORT || 3001;
 // ---------------------------------------------------------------------------
 // Inference provider config — three-tier chain:
 //
-//   Tier 1 (primary):  Cerebras free tier (llama-3.1-8b)
+//   Tier 1 (primary):  Cerebras free tier (gpt-oss-120b)
 //                      ~30 req/min, 1M tokens/day — free, no credit card.
-//                      ~1,800 tok/sec on custom silicon — faster than Groq.
+//                      ~3,000 tok/sec — fastest available inference.
 //                      Requires CEREBRAS_API_KEY.
 //
 //   Tier 2 (fallback): Groq free tier (llama-3.1-8b-instant)
@@ -97,7 +97,7 @@ const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
 const GROQ_MODEL = 'llama-3.1-8b-instant';
 
 const CEREBRAS_BASE_URL = 'https://api.cerebras.ai/v1';
-const CEREBRAS_MODEL = 'llama-3.3-70b'; // llama3.1-8b also available once account is verified
+const CEREBRAS_MODEL = 'gpt-oss-120b';
 const TOGETHER_BASE_URL = 'https://api.together.xyz/v1';
 const TOGETHER_MODEL = 'meta-llama/Llama-3.1-8B-Instruct-Turbo';
 
