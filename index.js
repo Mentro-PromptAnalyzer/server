@@ -97,7 +97,7 @@ const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
 const GROQ_MODEL = 'llama-3.1-8b-instant';
 
 const CEREBRAS_BASE_URL = 'https://api.cerebras.ai/v1';
-const CEREBRAS_MODEL = 'llama3.1-8b';
+const CEREBRAS_MODEL = 'llama-3.3-70b'; // llama3.1-8b also available once account is verified
 const TOGETHER_BASE_URL = 'https://api.together.xyz/v1';
 const TOGETHER_MODEL = 'meta-llama/Llama-3.1-8B-Instruct-Turbo';
 
@@ -1067,7 +1067,7 @@ app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
         break; // success — stop trying
       } catch (err) {
         const status = err.statusCode;
-        const isCapacityError = status === 429 || status >= 500;
+        const isCapacityError = status === 429 || status === 404 || status >= 500;
         const isAuthError = status === 401 || status === 403;
 
         console.warn(`[chat/stream] ${provider.name} failed (${status}): ${err.message}`);
