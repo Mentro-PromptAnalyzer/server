@@ -16,8 +16,9 @@ Backend proxy server for Mentro, a prompt analysis web app. Deployed to Fly.io a
 | `GET` | `/api/fetch-share?url=<encoded>` | None | Fetches AI share links (ChatGPT, Gemini, Perplexity) and extracts user messages |
 | `POST` | `/api/chat/stream` | Supabase JWT | Streams Groq LLM replies as SSE |
 | `POST` | `/api/count-tokens` | None | Multi-provider token counting |
-| `GET` | `/api/health` | None | Basic health check |
+| `GET` | `/api/health` | None | Basic health check (returns `{ ok: true, supabase: bool }`) |
 | `GET` | `/api/supabase-health` | None | Supabase connectivity check |
+| `GET` | `/` | None | Root ping — returns a plain text hello message |
 
 ## Key Behaviours
 
@@ -37,9 +38,10 @@ Backend proxy server for Mentro, a prompt analysis web app. Deployed to Fly.io a
 - Auth: Supabase JWT verified via `GET /auth/v1/user`
 
 ### `/api/count-tokens`
-- Providers: `openai` (tiktoken local, cl100k_base), `gemini` (Gemini API, default model: `gemini-2.5-flash`), `perplexity` (Perplexity API, default model: `sonar-pro`, max_tokens: 1 trick)
+- Providers: `openai` (tiktoken local, cl100k_base, default model: `gpt-4o`), `gemini` (Gemini API, default model: `gemini-2.5-flash`), `perplexity` (Perplexity API, default model: `sonar-pro`, max_tokens: 1 trick)
 - Provider config lives in `providerRegistry.js`; request validation in `validateTokenRequest.js`
-- Optional providers (Gemini, Perplexity) return `503` if their API key is missing
+- Optional providers (Gemini, Perplexity) return `503` if their API key env var is set but missing; if the API call fails at runtime, the endpoint falls back to local tiktoken estimation and returns a `warning` field in the response
+- Response shape: `{ inputTokens, estimationType, provider, model, warning? }` — `estimationType` is `"local_estimate"` or `"provider_count"`
 
 ## Environment Variables
 

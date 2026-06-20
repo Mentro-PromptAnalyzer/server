@@ -20,7 +20,7 @@ Every `console.log/warn/error` call uses a `[module]` prefix. Use these to filte
 | Variable | Missing behaviour |
 |----------|------------------|
 | `SUPABASE_URL` / `SUPABASE_ANON_KEY` | `/api/chat/stream` returns `503`. Supabase health check fails. Server still starts. |
-| `GROQ_API_KEY` | `/api/chat/stream` returns `500` on first request (key check is runtime, not startup). |
+| `GROQ_API_KEY` | `/api/chat/stream` returns `503` on first request (key is checked at request time, not startup). |
 | `GEMINI_API_KEY` | `/api/count-tokens` with `provider: "gemini"` returns `503`. All other providers unaffected. |
 | `PERPLEXITY_API_KEY` | `/api/count-tokens` with `provider: "perplexity"` returns `503`. All other providers unaffected. |
 | `CHROMIUM_PATH` | Defaults to `/usr/bin/chromium`. If that path doesn't exist (local dev on macOS/Windows), Puppeteer fails and `/api/fetch-share` falls back — but Strategy 1 (HTTP fetch) still works without Chromium. |

@@ -69,8 +69,73 @@ getWarmBrowser().catch((err) => {
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// ---------------------------------------------------------------------------
+// Inference provider config — three-tier chain:
+//
+//   Tier 1 (primary):  Gemini free tier (gemini-2.0-flash)
+//                      15 req/min, 1,500 req/day — free, no credit card.
+//                      Requires GEMINI_API_KEY.
+//
+//   Tier 2 (fallback): Groq free tier (llama-3.1-8b-instant)
+//                      30 req/min, 14,400 req/day — free.
+//                      Requires GROQ_API_KEY.
+//
+//   Tier 3 (last resort): Together AI paid (Llama-3.1-8B-Instruct-Turbo)
+//                         Dynamic limits, ~$0.10/1M tokens.
+//                         Requires TOGETHER_API_KEY.
+//
+// Tiers 2 and 3 activate automatically on primary/fallback 429 or 5xx.
+// Auth failures (401/403) are never retried — those are config problems.
+//
+// Backward compat: if only GROQ_API_KEY is set, tier 1 = Groq, tiers 2/3
+// are skipped — existing deployments keep working unchanged.
+// ---------------------------------------------------------------------------
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
 const GROQ_MODEL = 'llama-3.1-8b-instant';
+
+const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
+const GEMINI_MODEL = 'gemini-2.0-flash';
+const TOGETHER_BASE_URL = 'https://api.together.xyz/v1';
+const TOGETHER_MODEL = 'meta-llama/Llama-3.1-8B-Instruct-Turbo';
+
+// Build the provider chain — each entry is { base, key, model, name }.
+// Only include a tier if its key is set. Falls back gracefully at runtime.
+const INFERENCE_CHAIN = [];
+
+if (process.env.GEMINI_API_KEY) {
+  INFERENCE_CHAIN.push({
+    name: 'Gemini',
+    base: process.env.INFERENCE_BASE_URL || GEMINI_BASE_URL,
+    key: process.env.INFERENCE_API_KEY || process.env.GEMINI_API_KEY,
+    model: process.env.INFERENCE_MODEL || GEMINI_MODEL,
+  });
+}
+
+if (GROQ_API_KEY) {
+  INFERENCE_CHAIN.push({
+    name: 'Groq',
+    base: GROQ_BASE_URL,
+    key: GROQ_API_KEY,
+    model: GROQ_MODEL,
+  });
+}
+
+if (process.env.TOGETHER_API_KEY) {
+  INFERENCE_CHAIN.push({
+    name: 'Together AI',
+    base: TOGETHER_BASE_URL,
+    key: process.env.TOGETHER_API_KEY,
+    model: TOGETHER_MODEL,
+  });
+}
+
+// If none of the above keys are set, log a warning at startup.
+if (INFERENCE_CHAIN.length === 0) {
+  console.warn('[chat/stream] No inference API keys configured — /api/chat/stream will return 503');
+}
+
 const MAX_MESSAGES = 50;
 const MAX_CONTENT_LENGTH = 32000;
 const MAX_TOTAL_CONTENT = 128000;
@@ -863,8 +928,41 @@ app.get('/api/fetch-share', async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/chat/stream
-// Streams assistant response from Groq as SSE events
+// Streams assistant response as SSE events.
+// Tries providers in INFERENCE_CHAIN order: Gemini → Groq → Together AI.
+// Each tier is attempted on 429 (rate limited) or 5xx (server error).
+// Auth failures (401/403) surface immediately without retrying.
 // ---------------------------------------------------------------------------
+
+/**
+ * Attempt a single streaming inference call. Returns the fetch Response on
+ * success (2xx), or throws an Error with a `statusCode` property on failure.
+ */
+async function callInferenceStream(baseUrl, apiKey, model, messages, signal) {
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ model, messages, stream: true }),
+    signal,
+  });
+
+  if (!response.ok) {
+    let detail = `Inference request failed with status ${response.status}.`;
+    try {
+      const upstream = await response.json();
+      detail = upstream?.error?.message || detail;
+    } catch {}
+    const err = new Error(detail);
+    err.statusCode = response.status;
+    throw err;
+  }
+
+  return response;
+}
+
 app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
   console.log('[chat/stream] Received request with', req.body?.messages?.length, 'messages');
   const messages = req.body?.messages;
@@ -875,14 +973,16 @@ app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
     return res.status(400).json({ error: validation.error });
   }
 
-  if (!GROQ_API_KEY) {
-    console.log('[chat/stream] GROQ_API_KEY not configured');
+  if (INFERENCE_CHAIN.length === 0) {
+    console.log('[chat/stream] No inference API key configured');
     return res.status(503).json({
-      error: 'GROQ_API_KEY is not configured on the server.',
+      error: 'No inference API key is configured on the server.',
     });
   }
 
-  console.log('[chat/stream] Starting stream to Groq...');
+  console.log(
+    `[chat/stream] Starting stream — chain: ${INFERENCE_CHAIN.map((p) => p.name).join(' → ')}`
+  );
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -896,47 +996,16 @@ app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
     }
   });
 
-  try {
-    const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${GROQ_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: GROQ_MODEL,
-        messages,
-        stream: true,
-      }),
-      signal: abortController.signal,
-    });
-
-    if (!groqResponse.ok) {
-      console.log('[chat/stream] Groq response not OK:', groqResponse.status);
-      let detail = `Groq request failed with status ${groqResponse.status}.`;
-      try {
-        const upstream = await groqResponse.json();
-        detail = upstream?.error?.message || detail;
-      } catch {}
-
-      if (groqResponse.status === 401 || groqResponse.status === 403) {
-        sendSseEvent(res, 'error', {
-          code: 'INVALID_API_KEY',
-          message: 'Groq API key rejected by upstream service.',
-        });
-      } else {
-        sendSseEvent(res, 'error', { code: 'UPSTREAM_ERROR', message: detail });
-      }
-      return res.end();
-    }
-
-    const reader = groqResponse.body?.getReader();
+  /**
+   * Stream tokens from a fetch Response to the SSE client.
+   * Returns the number of tokens sent.
+   */
+  async function streamResponse(inferenceResponse) {
+    const reader = inferenceResponse.body?.getReader();
     if (!reader) {
-      sendSseEvent(res, 'error', {
-        code: 'UPSTREAM_ERROR',
-        message: 'No response stream from Groq.',
-      });
-      return res.end();
+      const err = new Error('No response stream from inference provider.');
+      err.statusCode = 502;
+      throw err;
     }
 
     const decoder = new TextDecoder();
@@ -957,10 +1026,8 @@ app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
           if (!line.startsWith('data:')) continue;
           const data = line.slice(5).trim();
           if (data === '[DONE]') {
-            sendSseEvent(res, 'end', { done: true });
-            return res.end();
+            return tokenCount;
           }
-
           try {
             const parsed = JSON.parse(data);
             const text = parsed?.choices?.[0]?.delta?.content;
@@ -975,6 +1042,62 @@ app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
       }
     }
 
+    return tokenCount;
+  }
+
+  try {
+    let inferenceResponse;
+
+    // Walk the provider chain until one succeeds or all are exhausted.
+    let lastErr = null;
+    for (const provider of INFERENCE_CHAIN) {
+      try {
+        console.log(`[chat/stream] Trying ${provider.name} (${provider.model})...`);
+        inferenceResponse = await callInferenceStream(
+          provider.base,
+          provider.key,
+          provider.model,
+          messages,
+          abortController.signal
+        );
+        lastErr = null;
+        break; // success — stop trying
+      } catch (err) {
+        const status = err.statusCode;
+        const isCapacityError = status === 429 || status >= 500;
+        const isAuthError = status === 401 || status === 403;
+
+        console.warn(`[chat/stream] ${provider.name} failed (${status}): ${err.message}`);
+
+        if (isAuthError) {
+          // Auth errors are config problems — no point trying other providers.
+          sendSseEvent(res, 'error', {
+            code: 'INVALID_API_KEY',
+            message: `${provider.name} API key rejected.`,
+          });
+          return res.end();
+        }
+
+        if (isCapacityError) {
+          lastErr = err;
+          // Continue to next provider in chain
+          continue;
+        }
+
+        // Any other error (network, bad request, etc.) — surface immediately.
+        lastErr = err;
+        break;
+      }
+    }
+
+    if (!inferenceResponse) {
+      const message = lastErr?.message || 'All inference providers failed.';
+      console.error('[chat/stream] All providers exhausted:', message);
+      sendSseEvent(res, 'error', { code: 'UPSTREAM_ERROR', message });
+      return res.end();
+    }
+
+    const tokenCount = await streamResponse(inferenceResponse);
     console.log('[chat/stream] Stream complete. Sent', tokenCount, 'tokens');
     sendSseEvent(res, 'end', { done: true });
     return res.end();
@@ -983,10 +1106,8 @@ app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
       return res.end();
     }
     const message = err instanceof Error ? err.message : 'Unknown streaming error.';
-    sendSseEvent(res, 'error', {
-      code: 'STREAM_FAILURE',
-      message,
-    });
+    console.error('[chat/stream] Unexpected error:', message);
+    sendSseEvent(res, 'error', { code: 'STREAM_FAILURE', message });
     return res.end();
   }
 });
