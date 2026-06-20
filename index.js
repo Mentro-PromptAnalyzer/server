@@ -1067,29 +1067,24 @@ app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
         break; // success — stop trying
       } catch (err) {
         const status = err.statusCode;
-        const isCapacityError = status === 429 || status === 404 || status >= 500;
-        const isAuthError = status === 401 || status === 403;
 
         console.warn(`[chat/stream] ${provider.name} failed (${status}): ${err.message}`);
 
-        if (isAuthError) {
-          // Auth errors are config problems — no point trying other providers.
-          sendSseEvent(res, 'error', {
-            code: 'INVALID_API_KEY',
-            message: `${provider.name} API key rejected.`,
-          });
+        // Only stop the chain for errors where retrying a different provider
+        // definitely won't help: our own server's auth (401) and bad request
+        // body (400). Everything else — provider auth failures, model not found,
+        // rate limits, server errors, unknown codes — falls through to the next
+        // provider, since a different provider may succeed where this one failed.
+        const isHopeless = status === 400 || status === 401;
+
+        if (isHopeless) {
+          const code = status === 401 ? 'UNAUTHORIZED' : 'BAD_REQUEST';
+          sendSseEvent(res, 'error', { code, message: err.message });
           return res.end();
         }
 
-        if (isCapacityError) {
-          lastErr = err;
-          // Continue to next provider in chain
-          continue;
-        }
-
-        // Any other error (network, bad request, etc.) — surface immediately.
         lastErr = err;
-        break;
+        // Continue to next provider in chain
       }
     }
 
