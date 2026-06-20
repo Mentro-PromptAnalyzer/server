@@ -73,9 +73,10 @@ const PORT = process.env.PORT || 3001;
 // ---------------------------------------------------------------------------
 // Inference provider config — three-tier chain:
 //
-//   Tier 1 (primary):  Gemini free tier (gemini-2.0-flash)
-//                      15 req/min, 1,500 req/day — free, no credit card.
-//                      Requires GEMINI_API_KEY.
+//   Tier 1 (primary):  Cerebras free tier (llama-3.1-8b)
+//                      ~30 req/min, 1M tokens/day — free, no credit card.
+//                      ~1,800 tok/sec on custom silicon — faster than Groq.
+//                      Requires CEREBRAS_API_KEY.
 //
 //   Tier 2 (fallback): Groq free tier (llama-3.1-8b-instant)
 //                      30 req/min, 14,400 req/day — free.
@@ -88,15 +89,15 @@ const PORT = process.env.PORT || 3001;
 // Tiers 2 and 3 activate automatically on primary/fallback 429 or 5xx.
 // Auth failures (401/403) are never retried — those are config problems.
 //
-// Backward compat: if only GROQ_API_KEY is set, tier 1 = Groq, tiers 2/3
-// are skipped — existing deployments keep working unchanged.
+// Backward compat: if only GROQ_API_KEY is set, tier 1 = Groq, tier 3
+// is skipped — existing deployments keep working unchanged.
 // ---------------------------------------------------------------------------
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
 const GROQ_MODEL = 'llama-3.1-8b-instant';
 
-const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
-const GEMINI_MODEL = 'gemini-2.0-flash';
+const CEREBRAS_BASE_URL = 'https://api.cerebras.ai/v1';
+const CEREBRAS_MODEL = 'llama3.1-8b';
 const TOGETHER_BASE_URL = 'https://api.together.xyz/v1';
 const TOGETHER_MODEL = 'meta-llama/Llama-3.1-8B-Instruct-Turbo';
 
@@ -104,12 +105,12 @@ const TOGETHER_MODEL = 'meta-llama/Llama-3.1-8B-Instruct-Turbo';
 // Only include a tier if its key is set. Falls back gracefully at runtime.
 const INFERENCE_CHAIN = [];
 
-if (process.env.GEMINI_API_KEY) {
+if (process.env.CEREBRAS_API_KEY) {
   INFERENCE_CHAIN.push({
-    name: 'Gemini',
-    base: process.env.INFERENCE_BASE_URL || GEMINI_BASE_URL,
-    key: process.env.INFERENCE_API_KEY || process.env.GEMINI_API_KEY,
-    model: process.env.INFERENCE_MODEL || GEMINI_MODEL,
+    name: 'Cerebras',
+    base: CEREBRAS_BASE_URL,
+    key: process.env.CEREBRAS_API_KEY,
+    model: CEREBRAS_MODEL,
   });
 }
 
@@ -929,7 +930,7 @@ app.get('/api/fetch-share', async (req, res) => {
 // ---------------------------------------------------------------------------
 // POST /api/chat/stream
 // Streams assistant response as SSE events.
-// Tries providers in INFERENCE_CHAIN order: Gemini → Groq → Together AI.
+// Tries providers in INFERENCE_CHAIN order: Cerebras → Groq → Together AI.
 // Each tier is attempted on 429 (rate limited) or 5xx (server error).
 // Auth failures (401/403) surface immediately without retrying.
 // ---------------------------------------------------------------------------
