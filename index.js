@@ -953,7 +953,9 @@ async function callInferenceStream(baseUrl, apiKey, model, messages, signal) {
     let detail = `Inference request failed with status ${response.status}.`;
     try {
       const upstream = await response.json();
-      detail = upstream?.error?.message || detail;
+      // Log the full error body so we can diagnose key/quota issues
+      console.warn(`[inference] ${response.status} error body:`, JSON.stringify(upstream));
+      detail = upstream?.error?.message || upstream?.message || detail;
     } catch {}
     const err = new Error(detail);
     err.statusCode = response.status;
