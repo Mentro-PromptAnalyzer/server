@@ -20,7 +20,9 @@ Every `console.log/warn/error` call uses a `[module]` prefix. Use these to filte
 | Variable | Missing behaviour |
 |----------|------------------|
 | `SUPABASE_URL` / `SUPABASE_ANON_KEY` | `/api/chat/stream` returns `503`. Supabase health check fails. Server still starts. |
-| `GROQ_API_KEY` | `/api/chat/stream` returns `503` on first request (key is checked at request time, not startup). |
+| `CEREBRAS_API_KEY` | Tier 1 is skipped — chain starts at Groq (or Together AI if Groq is also missing). Logged at startup if all keys are absent. |
+| `GROQ_API_KEY` | Tier 2 is skipped — chain falls through to Together AI. If no keys at all are set, a startup warning is logged and `/api/chat/stream` returns `503` on every request. |
+| `TOGETHER_API_KEY` | Tier 3 is skipped — chain ends after Groq (or Cerebras). No fallback beyond this point. |
 | `GEMINI_API_KEY` | `/api/count-tokens` with `provider: "gemini"` returns `503`. All other providers unaffected. |
 | `PERPLEXITY_API_KEY` | `/api/count-tokens` with `provider: "perplexity"` returns `503`. All other providers unaffected. |
 | `CHROMIUM_PATH` | Defaults to `/usr/bin/chromium`. If that path doesn't exist (local dev on macOS/Windows), Puppeteer fails and `/api/fetch-share` falls back — but Strategy 1 (HTTP fetch) still works without Chromium. |
@@ -94,4 +96,4 @@ The machine auto-stops when idle and auto-starts on the next inbound request. Th
   - macOS (Homebrew): `/usr/bin/chromium` or wherever `which chromium` points
   - Or just let Strategy 1 handle share URLs — it works without Chromium for most ChatGPT links
 - `npm run dev` uses `--watch` (Node.js built-in), which restarts on file changes
-- Supabase and Groq keys from `.env` are required for chat streaming to work locally
+- Supabase key and at least one inference key (CEREBRAS, GROQ, or TOGETHER) from `.env` are required for chat streaming to work locally

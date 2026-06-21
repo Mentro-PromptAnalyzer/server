@@ -126,6 +126,6 @@ Include relevant context (URL, strategy name, count, status code) but never log 
 
 - Prefer existing dependencies over adding new ones.
 - `node-fetch` v2 is used in adapters (CommonJS compatible). Use it for adapter HTTP calls.
-- Native `fetch` is used in `index.js` for auth verification and Groq streaming (Node 18+ built-in). Keep this split consistent.
+- Native `fetch` is used in `index.js` for auth verification and inference chain streaming (Node 18+ built-in). Keep this split consistent.
 - `puppeteer-core` is used (not full `puppeteer`) — it does not bundle Chromium. System Chromium is always required.
 - Pin new dependencies to exact versions in `package.json`.

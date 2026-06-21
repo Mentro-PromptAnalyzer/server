@@ -82,14 +82,9 @@ const PORT = process.env.PORT || 3001;
 //                      30 req/min, 14,400 req/day — free.
 //                      Requires GROQ_API_KEY.
 //
-//   Tier 3 (fallback): Together AI paid (Llama-3.1-8B-Instruct-Turbo)
+//   Tier 3 (fallback): Together AI paid (Llama-3.3-70B-Instruct-Turbo)
 //                      Dynamic limits, ~$0.10/1M tokens.
 //                      Requires TOGETHER_API_KEY.
-//
-//   Tier 4 (last resort): OCI Generative AI (meta.llama-3.3-70b-instruct)
-//                         Free tier via OCI Always Free account.
-//                         Routes to us-chicago-1 from US West (San Jose).
-//                         Requires OCI_GENAI_API_KEY.
 //
 // Each tier activates automatically when the previous returns any non-400/401
 // error. Auth failures (401) and bad requests (400) stop the chain immediately.
@@ -104,10 +99,7 @@ const GROQ_MODEL = 'llama-3.1-8b-instant';
 const CEREBRAS_BASE_URL = 'https://api.cerebras.ai/v1';
 const CEREBRAS_MODEL = 'gpt-oss-120b';
 const TOGETHER_BASE_URL = 'https://api.together.xyz/v1';
-const TOGETHER_MODEL = 'meta-llama/Llama-3.1-8B-Instruct-Turbo';
-const OCI_BASE_URL =
-  'https://inference.generativeai.us-chicago-1.oci.oraclecloud.com/20231130/actions/v1';
-const OCI_MODEL = 'meta.llama-3.3-70b-instruct';
+const TOGETHER_MODEL = 'meta-llama/Llama-3.3-70B-Instruct-Turbo';
 
 // Build the provider chain — each entry is { base, key, model, name }.
 // Only include a tier if its key is set. Falls back gracefully at runtime.
@@ -137,15 +129,6 @@ if (process.env.TOGETHER_API_KEY) {
     base: TOGETHER_BASE_URL,
     key: process.env.TOGETHER_API_KEY,
     model: TOGETHER_MODEL,
-  });
-}
-
-if (process.env.OCI_GENAI_API_KEY) {
-  INFERENCE_CHAIN.push({
-    name: 'OCI Generative AI',
-    base: OCI_BASE_URL,
-    key: process.env.OCI_GENAI_API_KEY,
-    model: OCI_MODEL,
   });
 }
 
@@ -1185,6 +1168,112 @@ app.post('/api/count-tokens', async (req, res) => {
       model,
       warning: `${provider} API unavailable: ${err.message}. Fell back to local estimation.`,
     });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/inference-test?provider=<name>
+// Dev-only endpoint — calls a single provider from INFERENCE_CHAIN directly,
+// bypassing the fallback logic. Returns provider name, model, response text,
+// and latency in JSON. Not available in production.
+// Gate: process.env.NODE_ENV !== 'production' OR process.env.ENABLE_TEST_ENDPOINTS === 'true'
+// ---------------------------------------------------------------------------
+const TEST_MESSAGE = [{ role: 'user', content: "Say 'ok' in one word" }];
+
+app.get('/api/inference-test', async (req, res) => {
+  const isEnabled =
+    process.env.NODE_ENV !== 'production' || process.env.ENABLE_TEST_ENDPOINTS === 'true';
+
+  if (!isEnabled) {
+    return res.status(404).json({ error: 'Not found.' });
+  }
+
+  const providerName = (req.query.provider || '').trim().toLowerCase();
+  if (!providerName) {
+    return res.status(400).json({
+      error: 'Missing required query param: provider',
+      available: INFERENCE_CHAIN.map((p) => p.name.toLowerCase()),
+    });
+  }
+
+  const provider = INFERENCE_CHAIN.find((p) => p.name.toLowerCase() === providerName);
+  if (!provider) {
+    return res.status(400).json({
+      error: `Unknown provider: "${providerName}"`,
+      available: INFERENCE_CHAIN.map((p) => p.name.toLowerCase()),
+    });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+  const start = Date.now();
+
+  try {
+    console.log(`[inference-test] Testing ${provider.name} (${provider.model})...`);
+    const inferenceResponse = await callInferenceStream(
+      provider.base,
+      provider.key,
+      provider.model,
+      TEST_MESSAGE,
+      controller.signal
+    );
+
+    // Collect the full streamed response into a single string
+    const reader = inferenceResponse.body?.getReader();
+    if (!reader) {
+      throw Object.assign(new Error('No response stream from provider.'), { statusCode: 502 });
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let responseText = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = events.pop() || '';
+
+      for (const eventBlock of events) {
+        for (const line of eventBlock.split(/\r?\n/)) {
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') break;
+          try {
+            const parsed = JSON.parse(data);
+            const text = parsed?.choices?.[0]?.delta?.content;
+            if (typeof text === 'string') responseText += text;
+          } catch {
+            // ignore malformed chunks
+          }
+        }
+      }
+    }
+
+    const latencyMs = Date.now() - start;
+    console.log(`[inference-test] ${provider.name} OK — ${latencyMs}ms — "${responseText.trim()}"`);
+
+    return res.json({
+      provider: provider.name,
+      model: provider.model,
+      response: responseText.trim(),
+      latencyMs,
+      ok: true,
+    });
+  } catch (err) {
+    const latencyMs = Date.now() - start;
+    console.warn(`[inference-test] ${provider.name} failed (${err.statusCode}): ${err.message}`);
+    return res.status(200).json({
+      provider: provider.name,
+      model: provider.model,
+      error: err.message,
+      latencyMs,
+      ok: false,
+    });
+  } finally {
+    clearTimeout(timeout);
   }
 });
 
