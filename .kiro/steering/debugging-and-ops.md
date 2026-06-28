@@ -14,6 +14,7 @@ Every `console.log/warn/error` call uses a `[module]` prefix. Use these to filte
 | `[gemini]` | `adapters/geminiAdapter.js` | Gemini API errors, missing key |
 | `[perplexity]` | `adapters/perplexityAdapter.js` | Perplexity API errors, missing key |
 | `[local]` | `adapters/localEstimator.js` | tiktoken estimation issues |
+| `[inference-test]` | `/api/inference-test` handler | Per-provider test results, latency, errors |
 
 ## What Breaks Without Each Env Var
 
@@ -26,6 +27,7 @@ Every `console.log/warn/error` call uses a `[module]` prefix. Use these to filte
 | `GEMINI_API_KEY` | `/api/count-tokens` with `provider: "gemini"` returns `503`. All other providers unaffected. |
 | `PERPLEXITY_API_KEY` | `/api/count-tokens` with `provider: "perplexity"` returns `503`. All other providers unaffected. |
 | `CHROMIUM_PATH` | Defaults to `/usr/bin/chromium`. If that path doesn't exist (local dev on macOS/Windows), Puppeteer fails and `/api/fetch-share` falls back — but Strategy 1 (HTTP fetch) still works without Chromium. |
+| `ENABLE_TEST_ENDPOINTS` | `/api/inference-test` is hidden (returns `404`) when `NODE_ENV=production` and this var is unset. Set to `"true"` to expose it in production for debugging. |
 | `PORT` | Defaults to `3001`. |
 
 ## Warm Browser Pool Behaviour

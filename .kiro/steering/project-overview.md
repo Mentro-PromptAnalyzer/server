@@ -16,6 +16,7 @@ Backend proxy server for Mentro, a prompt analysis web app. Deployed to Fly.io a
 | `GET` | `/api/fetch-share?url=<encoded>` | None | Fetches AI share links (ChatGPT, Gemini, Perplexity) and extracts user messages |
 | `POST` | `/api/chat/stream` | Supabase JWT | Streams LLM replies as SSE via multi-tier inference chain |
 | `POST` | `/api/count-tokens` | None | Multi-provider token counting |
+| `GET` | `/api/inference-test?provider=<name>` | None | Dev-only: calls a single provider directly, returns response text and latency. Disabled in production unless `ENABLE_TEST_ENDPOINTS=true` |
 | `GET` | `/api/health` | None | Basic health check (returns `{ ok: true, supabase: bool }`) |
 | `GET` | `/api/supabase-health` | None | Supabase connectivity check |
 | `GET` | `/` | None | Root ping — returns a plain text hello message |
@@ -31,7 +32,7 @@ Backend proxy server for Mentro, a prompt analysis web app. Deployed to Fly.io a
 - Uses a warm browser pool — Chromium is launched once at startup and reused across requests
 
 ### `/api/chat/stream`
-- Multi-tier inference chain: Cerebras (`gpt-oss-120b`) → Groq (`llama-3.1-8b-instant`) → Together AI (`meta-llama/Llama-3.3-70B-Instruct-Turbo`)
+- Multi-tier inference chain: Cerebras (`gpt-oss-120b`) → Groq (`openai/gpt-oss-20b`) → Together AI (`meta-llama/Llama-3.3-70B-Instruct-Turbo`)
 - Each tier activates automatically when the previous returns any non-400/401 error. 400 (bad request) and 401 (our own server auth failure) stop the chain immediately; all other errors (provider auth, rate limits, 5xx) fall through to the next tier.
 - Backward compat: if only `GROQ_API_KEY` is set, chain starts at Groq.
 - Chain is built dynamically at startup from whichever API keys are present — tiers with no key are skipped entirely.
@@ -44,7 +45,7 @@ Backend proxy server for Mentro, a prompt analysis web app. Deployed to Fly.io a
 - Providers: `openai` (tiktoken local, cl100k_base, default model: `gpt-4o`), `gemini` (Gemini API, default model: `gemini-2.5-flash`), `perplexity` (Perplexity API, default model: `sonar-pro`, max_tokens: 1 trick)
 - Provider config lives in `providerRegistry.js`; request validation in `validateTokenRequest.js`
 - Optional providers (Gemini, Perplexity) return `503` if their API key env var is set but missing; if the API call fails at runtime, the endpoint falls back to local tiktoken estimation and returns a `warning` field in the response
-- Response shape: `{ inputTokens, estimationType, provider, model, warning? }` — `estimationType` is `"local_estimate"` or `"provider_count"`
+- Response shape: `{ inputTokens, estimationType, provider, model, warning? }` — `estimationType` is `"local_estimate"` or `"provider_count"`. Perplexity responses may also include a `cost` field (`{ input_tokens_cost, output_tokens_cost, total_cost }`) when the API returns pricing data.
 
 ## Environment Variables
 
@@ -58,6 +59,7 @@ PORT=3001
 GEMINI_API_KEY=        # optional — enables Gemini token counting
 PERPLEXITY_API_KEY=    # optional — enables Perplexity token counting
 CHROMIUM_PATH=         # optional — defaults to /usr/bin/chromium (Docker)
+ENABLE_TEST_ENDPOINTS= # optional — set to "true" to enable /api/inference-test in production
 # OCI_GENAI_API_KEY — present in .env but not wired into the inference chain in index.js
 ```
 
