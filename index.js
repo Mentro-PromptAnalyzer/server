@@ -94,7 +94,7 @@ const PORT = process.env.PORT || 3001;
 // ---------------------------------------------------------------------------
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
-const GROQ_MODEL = 'llama-3.1-8b-instant';
+const GROQ_MODEL = 'openai/gpt-oss-20b';
 
 const CEREBRAS_BASE_URL = 'https://api.cerebras.ai/v1';
 const CEREBRAS_MODEL = 'gpt-oss-120b';
