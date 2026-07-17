@@ -12,10 +12,10 @@ jobs:
       - name: Ping Supabase
         run: |
           response=$(curl -s -o /dev/null -w "%{http_code}" \
-            "${{ secrets.SUPABASE_URL }}/rest/v1/" \
-            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}")
+            "${{ secrets.SUPABASE_URL }}/auth/v1/health")
           echo "Status: $response"
           if [ "$response" != "200" ]; then
-            echo "::warning::Supabase responded with $response"
+            echo "::error::Supabase health check failed (HTTP $response)"
+            exit 1
           fi
+          echo "Supabase is alive"
