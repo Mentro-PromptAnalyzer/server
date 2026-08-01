@@ -11,6 +11,7 @@ const { getProviderConfig } = require('./providerRegistry');
 const { countTokensGemini } = require('./adapters/geminiAdapter');
 const { countTokensPerplexity } = require('./adapters/perplexityAdapter');
 const { estimateTokensFromMessages } = require('./adapters/localEstimator');
+const { stoplightRouter } = require('./stoplight');
 
 // ---------------------------------------------------------------------------
 // Supabase client
@@ -315,6 +316,11 @@ app.use(
     },
   })
 );
+
+// ---------------------------------------------------------------------------
+// Stoplight hosted bridge — replaces the localhost bridge for remote users
+// ---------------------------------------------------------------------------
+app.use('/api/stoplight', stoplightRouter);
 
 // ---------------------------------------------------------------------------
 // GET /api/fetch-share?url=<encodedUrl>
