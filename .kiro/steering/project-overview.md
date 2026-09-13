@@ -11,19 +11,21 @@ Backend proxy server for Mentro, a prompt analysis web app. Deployed to Fly.io a
 
 ## API Endpoints
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| `GET` | `/api/fetch-share?url=<encoded>` | None | Fetches AI share links (ChatGPT, Gemini, Perplexity) and extracts user messages |
-| `POST` | `/api/chat/stream` | Supabase JWT | Streams LLM replies as SSE via multi-tier inference chain |
-| `POST` | `/api/count-tokens` | None | Multi-provider token counting |
-| `GET` | `/api/inference-test?provider=<name>` | None | Dev-only: calls a single provider directly, returns response text and latency. Disabled in production unless `ENABLE_TEST_ENDPOINTS=true` |
-| `GET` | `/api/health` | None | Basic health check (returns `{ ok: true, supabase: bool }`) |
-| `GET` | `/api/supabase-health` | None | Supabase connectivity check |
-| `GET` | `/` | None | Root ping — returns a plain text hello message |
+| Method | Path                                  | Auth         | Description                                                                                                                               |
+| ------ | ------------------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/fetch-share?url=<encoded>`      | None         | Fetches AI share links (ChatGPT, Gemini, Perplexity) and extracts user messages                                                           |
+| `POST` | `/api/chat/stream`                    | Supabase JWT | Streams LLM replies as SSE via multi-tier inference chain                                                                                 |
+| `POST` | `/api/chat/stream-full`               | Supabase JWT | Same inference chain, but streams the full provider chunk JSON per event and an aggregated final object (content + usage + finish_reason) |
+| `POST` | `/api/count-tokens`                   | None         | Multi-provider token counting                                                                                                             |
+| `GET`  | `/api/inference-test?provider=<name>` | None         | Dev-only: calls a single provider directly, returns response text and latency. Disabled in production unless `ENABLE_TEST_ENDPOINTS=true` |
+| `GET`  | `/api/health`                         | None         | Basic health check (returns `{ ok: true, supabase: bool }`)                                                                               |
+| `GET`  | `/api/supabase-health`                | None         | Supabase connectivity check                                                                                                               |
+| `GET`  | `/`                                   | None         | Root ping — returns a plain text hello message                                                                                            |
 
 ## Key Behaviours
 
 ### `/api/fetch-share`
+
 - Allowlisted hostnames: `chatgpt.com`, `chat.openai.com`, `gemini.google.com`, `perplexity.ai`, `www.perplexity.ai`
 - Valid path prefixes: `/share/`, `/chat/`, `/app/`, `/search/`, `/i/grok/share/`
 - Note: error messages reference Claude and Grok, but neither has an allowlisted hostname yet — only the `/i/grok/share/` path prefix is registered
@@ -32,6 +34,7 @@ Backend proxy server for Mentro, a prompt analysis web app. Deployed to Fly.io a
 - Uses a warm browser pool — Chromium is launched once at startup and reused across requests
 
 ### `/api/chat/stream`
+
 - Multi-tier inference chain: Cerebras (`gpt-oss-120b`) → Groq (`openai/gpt-oss-20b`) → Together AI (`meta-llama/Llama-3.3-70B-Instruct-Turbo`)
 - Each tier activates automatically when the previous returns any non-400/401 error. 400 (bad request) and 401 (our own server auth failure) stop the chain immediately; all other errors (provider auth, rate limits, 5xx) fall through to the next tier.
 - Backward compat: if only `GROQ_API_KEY` is set, chain starts at Groq.
@@ -41,7 +44,16 @@ Backend proxy server for Mentro, a prompt analysis web app. Deployed to Fly.io a
 - Rate limit: 20 requests/min per `userId` (in-memory `Map`, resets per window)
 - Auth: Supabase JWT verified via `GET /auth/v1/user`
 
+### `/api/chat/stream-full`
+
+- Same multi-tier inference chain, chain semantics, limits, rate limit, and auth as `/api/chat/stream`. Use this when the consumer needs the whole AI response JSON, not just the reply text.
+- Unlike `/api/chat/stream` (which extracts only `choices[0].delta.content` and emits `event: token`), this endpoint forwards the **entire provider chunk object** verbatim on each `event: chunk`.
+- SSE events: `event: chunk` (raw OpenAI-compatible chunk), `event: error` (`{ code, message }`), `event: end`.
+- The `event: end` payload is an aggregated response object: `{ done, provider, model, role, content, finishReason, usage, chunkCount }` — `content` is the fully assembled message text, `usage` is the provider's token usage (or `null`), `finishReason` is the stop reason (or `null`).
+- Requests usage stats by sending `stream_options: { include_usage: true }` to the provider (via the shared `callInferenceStream(..., includeUsage=true)`). Providers that don't support it simply return `usage: null`.
+
 ### `/api/count-tokens`
+
 - Providers: `openai` (tiktoken local, cl100k_base, default model: `gpt-4o`), `gemini` (Gemini API, default model: `gemini-2.5-flash`), `perplexity` (Perplexity API, default model: `sonar-pro`, max_tokens: 1 trick)
 - Provider config lives in `providerRegistry.js`; request validation in `validateTokenRequest.js`
 - Optional providers (Gemini, Perplexity) return `503` if their API key env var is set but missing; if the API call fails at runtime, the endpoint falls back to local tiktoken estimation and returns a `warning` field in the response
