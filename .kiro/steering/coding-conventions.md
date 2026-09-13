@@ -81,6 +81,7 @@ New adapters go in `adapters/`. New routes go in `index.js`. Extract validation 
 ## Provider Registry Pattern
 
 When adding a new token-counting provider:
+
 1. Add an entry to `PROVIDERS` in `providerRegistry.js` with `provider`, `model`, `apiKeyEnv`, `endpoint`.
 2. Create `adapters/<name>Adapter.js` — export a single async function `countTokens<Name>(messages, model)`.
 3. Import and wire it in the `POST /api/count-tokens` handler in `index.js`.

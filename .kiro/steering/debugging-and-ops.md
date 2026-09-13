@@ -4,31 +4,31 @@
 
 Every `console.log/warn/error` call uses a `[module]` prefix. Use these to filter logs quickly.
 
-| Prefix | Source | What it tells you |
-|--------|--------|-------------------|
-| `[browser]` | `index.js` — Puppeteer pool | Chromium launch, reuse, disconnect events |
-| `[fetch-share]` | `/api/fetch-share` handler | Which strategy ran, message count, fallback reason |
-| `[extract]` | `extractMessagesFromHtml()` | Which HTML parsing strategy succeeded |
-| `[auth]` | `requireAuth` middleware | Token verification failures, missing config |
-| `[supabase]` | Supabase client init | Missing env vars at startup |
-| `[gemini]` | `adapters/geminiAdapter.js` | Gemini API errors, missing key |
-| `[perplexity]` | `adapters/perplexityAdapter.js` | Perplexity API errors, missing key |
-| `[local]` | `adapters/localEstimator.js` | tiktoken estimation issues |
-| `[inference-test]` | `/api/inference-test` handler | Per-provider test results, latency, errors |
+| Prefix             | Source                          | What it tells you                                  |
+| ------------------ | ------------------------------- | -------------------------------------------------- |
+| `[browser]`        | `index.js` — Puppeteer pool     | Chromium launch, reuse, disconnect events          |
+| `[fetch-share]`    | `/api/fetch-share` handler      | Which strategy ran, message count, fallback reason |
+| `[extract]`        | `extractMessagesFromHtml()`     | Which HTML parsing strategy succeeded              |
+| `[auth]`           | `requireAuth` middleware        | Token verification failures, missing config        |
+| `[supabase]`       | Supabase client init            | Missing env vars at startup                        |
+| `[gemini]`         | `adapters/geminiAdapter.js`     | Gemini API errors, missing key                     |
+| `[perplexity]`     | `adapters/perplexityAdapter.js` | Perplexity API errors, missing key                 |
+| `[local]`          | `adapters/localEstimator.js`    | tiktoken estimation issues                         |
+| `[inference-test]` | `/api/inference-test` handler   | Per-provider test results, latency, errors         |
 
 ## What Breaks Without Each Env Var
 
-| Variable | Missing behaviour |
-|----------|------------------|
-| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | `/api/chat/stream` returns `503`. Supabase health check fails. Server still starts. |
-| `CEREBRAS_API_KEY` | Tier 1 is skipped — chain starts at Groq (or Together AI if Groq is also missing). Logged at startup if all keys are absent. |
-| `GROQ_API_KEY` | Tier 2 is skipped — chain falls through to Together AI. If no keys at all are set, a startup warning is logged and `/api/chat/stream` returns `503` on every request. |
-| `TOGETHER_API_KEY` | Tier 3 is skipped — chain ends after Groq (or Cerebras). No fallback beyond this point. |
-| `GEMINI_API_KEY` | `/api/count-tokens` with `provider: "gemini"` returns `503`. All other providers unaffected. |
-| `PERPLEXITY_API_KEY` | `/api/count-tokens` with `provider: "perplexity"` returns `503`. All other providers unaffected. |
-| `CHROMIUM_PATH` | Defaults to `/usr/bin/chromium`. If that path doesn't exist (local dev on macOS/Windows), Puppeteer fails and `/api/fetch-share` falls back — but Strategy 1 (HTTP fetch) still works without Chromium. |
-| `ENABLE_TEST_ENDPOINTS` | `/api/inference-test` is hidden (returns `404`) when `NODE_ENV=production` and this var is unset. Set to `"true"` to expose it in production for debugging. |
-| `PORT` | Defaults to `3001`. |
+| Variable                             | Missing behaviour                                                                                                                                                                                       |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | `/api/chat/stream` returns `503`. Supabase health check fails. Server still starts.                                                                                                                     |
+| `CEREBRAS_API_KEY`                   | Tier 1 is skipped — chain starts at Groq (or Together AI if Groq is also missing). Logged at startup if all keys are absent.                                                                            |
+| `GROQ_API_KEY`                       | Tier 2 is skipped — chain falls through to Together AI. If no keys at all are set, a startup warning is logged and `/api/chat/stream` returns `503` on every request.                                   |
+| `TOGETHER_API_KEY`                   | Tier 3 is skipped — chain ends after Groq (or Cerebras). No fallback beyond this point.                                                                                                                 |
+| `GEMINI_API_KEY`                     | `/api/count-tokens` with `provider: "gemini"` returns `503`. All other providers unaffected.                                                                                                            |
+| `PERPLEXITY_API_KEY`                 | `/api/count-tokens` with `provider: "perplexity"` returns `503`. All other providers unaffected.                                                                                                        |
+| `CHROMIUM_PATH`                      | Defaults to `/usr/bin/chromium`. If that path doesn't exist (local dev on macOS/Windows), Puppeteer fails and `/api/fetch-share` falls back — but Strategy 1 (HTTP fetch) still works without Chromium. |
+| `ENABLE_TEST_ENDPOINTS`              | `/api/inference-test` is hidden (returns `404`) when `NODE_ENV=production` and this var is unset. Set to `"true"` to expose it in production for debugging.                                             |
+| `PORT`                               | Defaults to `3001`.                                                                                                                                                                                     |
 
 ## Warm Browser Pool Behaviour
 
@@ -48,6 +48,7 @@ Every `console.log/warn/error` call uses a `[module]` prefix. Use these to filte
 ## CORS Policy
 
 Allowed origins (enforced in `index.js`):
+
 - Any `http://localhost:<port>` — local dev
 - Any `*.vercel.app` — Vercel preview and production deployments
 - Any `chrome-extension://<id>` — Chrome extension (popup, content scripts)
@@ -65,6 +66,7 @@ When a share URL returns no messages:
 4. The `html.length` and `has streamController` debug log fires before Puppeteer — use it to confirm what the HTTP fetch actually returned.
 
 Platforms and their primary parse strategies:
+
 - **ChatGPT** — React Router stream data (Strategy A), then `__NEXT_DATA__` (Strategy B), then Puppeteer `[data-message-author-role]`
 - **Gemini** — Puppeteer only (Strategy 1 HTML rarely has structured data)
 - **Perplexity** — Puppeteer only, waits 5s for Cloudflare to clear

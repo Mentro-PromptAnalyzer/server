@@ -67,20 +67,23 @@ setInterval(() => {
 }, 30_000).unref();
 
 // Cleanup stale sessions after 24h of inactivity
-setInterval(() => {
-  const now = Date.now();
-  for (const [token, state] of sessions) {
-    if (now - state.updatedAt > CLEANUP_MS) {
-      sessions.delete(token);
-      const clients = sseClients.get(token);
-      if (clients) {
-        for (const res of clients) res.end();
-        sseClients.delete(token);
+setInterval(
+  () => {
+    const now = Date.now();
+    for (const [token, state] of sessions) {
+      if (now - state.updatedAt > CLEANUP_MS) {
+        sessions.delete(token);
+        const clients = sseClients.get(token);
+        if (clients) {
+          for (const res of clients) res.end();
+          sseClients.delete(token);
+        }
+        console.log(`[stoplight] Token ${token.slice(0, 8)}… cleaned up (24h inactive)`);
       }
-      console.log(`[stoplight] Token ${token.slice(0, 8)}… cleaned up (24h inactive)`);
     }
-  }
-}, 60 * 60 * 1000).unref(); // check every hour
+  },
+  60 * 60 * 1000
+).unref(); // check every hour
 
 // ---------------------------------------------------------------------------
 // POST /api/stoplight/register — create a new session token
@@ -135,9 +138,7 @@ router.post('/state', (req, res) => {
   entry.updatedAt = now;
 
   broadcast(token);
-  console.log(
-    `[stoplight] ${token.slice(0, 8)}… → ${state}${detail ? ` — ${detail}` : ''}`
-  );
+  console.log(`[stoplight] ${token.slice(0, 8)}… → ${state}${detail ? ` — ${detail}` : ''}`);
 
   return res.json(entry);
 });
