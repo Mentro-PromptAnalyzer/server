@@ -18,17 +18,17 @@ Every `console.log/warn/error` call uses a `[module]` prefix. Use these to filte
 
 ## What Breaks Without Each Env Var
 
-| Variable                             | Missing behaviour                                                                                                                                                                                       |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | `/api/chat/stream` returns `503`. Supabase health check fails. Server still starts.                                                                                                                     |
-| `CEREBRAS_API_KEY`                   | Tier 1 is skipped — chain starts at Groq (or Together AI if Groq is also missing). Logged at startup if all keys are absent.                                                                            |
-| `GROQ_API_KEY`                       | Tier 2 is skipped — chain falls through to Together AI. If no keys at all are set, a startup warning is logged and `/api/chat/stream` returns `503` on every request.                                   |
-| `TOGETHER_API_KEY`                   | Tier 3 is skipped — chain ends after Groq (or Cerebras). No fallback beyond this point.                                                                                                                 |
-| `GEMINI_API_KEY`                     | `/api/count-tokens` with `provider: "gemini"` returns `503`. All other providers unaffected.                                                                                                            |
-| `PERPLEXITY_API_KEY`                 | `/api/count-tokens` with `provider: "perplexity"` returns `503`. All other providers unaffected.                                                                                                        |
-| `CHROMIUM_PATH`                      | Defaults to `/usr/bin/chromium`. If that path doesn't exist (local dev on macOS/Windows), Puppeteer fails and `/api/fetch-share` falls back — but Strategy 1 (HTTP fetch) still works without Chromium. |
-| `ENABLE_TEST_ENDPOINTS`              | `/api/inference-test` is hidden (returns `404`) when `NODE_ENV=production` and this var is unset. Set to `"true"` to expose it in production for debugging.                                             |
-| `PORT`                               | Defaults to `3001`.                                                                                                                                                                                     |
+| Variable                             | Missing behaviour                                                                                                                                                                                                  |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` | `/api/chat/stream` returns `503`. Supabase health check fails. Server still starts.                                                                                                                                |
+| `GROQ_API_KEY`                       | Tier 1 (primary) is skipped — chain starts at Cerebras (or Together AI if Cerebras is also missing). If no keys at all are set, a startup warning is logged and `/api/chat/stream` returns `503` on every request. |
+| `CEREBRAS_API_KEY`                   | Tier 2 is skipped — chain falls through to Together AI. Logged at startup if all keys are absent.                                                                                                                  |
+| `TOGETHER_API_KEY`                   | Tier 3 is skipped — chain ends after Cerebras (or Groq). No fallback beyond this point.                                                                                                                            |
+| `GEMINI_API_KEY`                     | `/api/count-tokens` with `provider: "gemini"` returns `503`. All other providers unaffected.                                                                                                                       |
+| `PERPLEXITY_API_KEY`                 | `/api/count-tokens` with `provider: "perplexity"` returns `503`. All other providers unaffected.                                                                                                                   |
+| `CHROMIUM_PATH`                      | Defaults to `/usr/bin/chromium`. If that path doesn't exist (local dev on macOS/Windows), Puppeteer fails and `/api/fetch-share` falls back — but Strategy 1 (HTTP fetch) still works without Chromium.            |
+| `ENABLE_TEST_ENDPOINTS`              | `/api/inference-test` is hidden (returns `404`) when `NODE_ENV=production` and this var is unset. Set to `"true"` to expose it in production for debugging.                                                        |
+| `PORT`                               | Defaults to `3001`.                                                                                                                                                                                                |
 
 ## Warm Browser Pool Behaviour
 

@@ -95,7 +95,12 @@ const PORT = process.env.PORT || 3001;
 // ---------------------------------------------------------------------------
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
-const GROQ_MODEL = 'openai/gpt-oss-20b';
+// Instruct model (not a gpt-oss reasoning model). gpt-oss-20b only emitted
+// analysis-channel reasoning and never a final answer or tool calls, which
+// broke agentic/tool-using clients. llama-3.3-70b-versatile emits normal
+// final-channel content and honours format instructions ("reply with only
+// a fenced block"), returning finish_reason "stop" and usage stats.
+const GROQ_MODEL = 'llama-3.3-70b-versatile';
 
 const CEREBRAS_BASE_URL = 'https://api.cerebras.ai/v1';
 const CEREBRAS_MODEL = 'gpt-oss-120b';
@@ -104,16 +109,16 @@ const TOGETHER_MODEL = 'meta-llama/Llama-3.3-70B-Instruct-Turbo';
 
 // Build the provider chain — each entry is { base, key, model, name }.
 // Only include a tier if its key is set. Falls back gracefully at runtime.
+//
+// Order: Groq (instruct) → Cerebras → Together AI. Groq is primary because it
+// serves an instruct model (llama-3.3-70b-versatile) that emits final-channel
+// content and honours format/tool instructions. The Cerebras tier runs a
+// gpt-oss reasoning model (gpt-oss-120b) — Cerebras's public endpoints only
+// offer gpt-oss and Qwen reasoning models, no instruct model — so it can emit
+// reasoning-only output on instruction-heavy/tool-using prompts and is kept as
+// a fast fallback rather than the primary. Together AI (also instruct) is the
+// final fallback.
 const INFERENCE_CHAIN = [];
-
-if (process.env.CEREBRAS_API_KEY) {
-  INFERENCE_CHAIN.push({
-    name: 'Cerebras',
-    base: CEREBRAS_BASE_URL,
-    key: process.env.CEREBRAS_API_KEY,
-    model: CEREBRAS_MODEL,
-  });
-}
 
 if (GROQ_API_KEY) {
   INFERENCE_CHAIN.push({
@@ -121,6 +126,15 @@ if (GROQ_API_KEY) {
     base: GROQ_BASE_URL,
     key: GROQ_API_KEY,
     model: GROQ_MODEL,
+  });
+}
+
+if (process.env.CEREBRAS_API_KEY) {
+  INFERENCE_CHAIN.push({
+    name: 'Cerebras',
+    base: CEREBRAS_BASE_URL,
+    key: process.env.CEREBRAS_API_KEY,
+    model: CEREBRAS_MODEL,
   });
 }
 
