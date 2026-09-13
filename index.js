@@ -945,14 +945,22 @@ app.get('/api/fetch-share', async (req, res) => {
  * Attempt a single streaming inference call. Returns the fetch Response on
  * success (2xx), or throws an Error with a `statusCode` property on failure.
  */
-async function callInferenceStream(baseUrl, apiKey, model, messages, signal) {
+async function callInferenceStream(baseUrl, apiKey, model, messages, signal, includeUsage = false) {
+  const requestBody = { model, messages, stream: true };
+  // Opt into usage stats on the terminal chunk. OpenAI-compatible providers
+  // only emit `usage` during streaming when this is set. Harmless for
+  // providers that ignore it.
+  if (includeUsage) {
+    requestBody.stream_options = { include_usage: true };
+  }
+
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ model, messages, stream: true }),
+    body: JSON.stringify(requestBody),
     signal,
   });
 
@@ -1111,6 +1119,195 @@ app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
     }
     const message = err instanceof Error ? err.message : 'Unknown streaming error.';
     console.error('[chat/stream] Unexpected error:', message);
+    sendSseEvent(res, 'error', { code: 'STREAM_FAILURE', message });
+    return res.end();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/chat/stream-full
+// Same multi-tier inference chain as /api/chat/stream, but forwards the FULL
+// provider chunk JSON on each `event: chunk` (not just the extracted text
+// delta), and emits an aggregated `event: end` payload containing the fully
+// assembled message, accumulated usage, finish_reason, and provider/model
+// metadata. Use this when the consumer needs the whole AI response JSON.
+//
+// SSE events:
+//   event: chunk  -> the raw provider chunk object (OpenAI-compatible)
+//   event: error  -> { code, message }
+//   event: end    -> { done, provider, model, content, role, finishReason, usage, chunkCount }
+// ---------------------------------------------------------------------------
+app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
+  console.log('[chat/stream-full] Received request with', req.body?.messages?.length, 'messages');
+  const messages = req.body?.messages;
+  const validation = validateChatMessages(messages);
+
+  if (!validation.ok) {
+    console.log('[chat/stream-full] Validation failed:', validation.error);
+    return res.status(400).json({ error: validation.error });
+  }
+
+  if (INFERENCE_CHAIN.length === 0) {
+    console.log('[chat/stream-full] No inference API key configured');
+    return res.status(503).json({
+      error: 'No inference API key is configured on the server.',
+    });
+  }
+
+  console.log(
+    `[chat/stream-full] Starting stream — chain: ${INFERENCE_CHAIN.map((p) => p.name).join(' → ')}`
+  );
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const abortController = new AbortController();
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      abortController.abort();
+    }
+  });
+
+  /**
+   * Stream full provider chunks from a fetch Response to the SSE client.
+   * Forwards each parsed chunk as `event: chunk` and aggregates content,
+   * finish_reason, and usage across the stream. Returns the aggregate.
+   */
+  async function streamFullResponse(inferenceResponse) {
+    const reader = inferenceResponse.body?.getReader();
+    if (!reader) {
+      const err = new Error('No response stream from inference provider.');
+      err.statusCode = 502;
+      throw err;
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let chunkCount = 0;
+    let content = '';
+    let role = 'assistant';
+    let finishReason = null;
+    let usage = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = events.pop() || '';
+
+      for (const eventBlock of events) {
+        const lines = eventBlock.split(/\r?\n/);
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') {
+            return { content, role, finishReason, usage, chunkCount };
+          }
+          try {
+            const parsed = JSON.parse(data);
+            chunkCount++;
+
+            // Aggregate assembled state so the `end` event can carry a
+            // complete response object even though we also forward raw chunks.
+            const choice = parsed?.choices?.[0];
+            const deltaContent = choice?.delta?.content;
+            if (typeof deltaContent === 'string') {
+              content += deltaContent;
+            }
+            if (choice?.delta?.role) {
+              role = choice.delta.role;
+            }
+            if (choice?.finish_reason) {
+              finishReason = choice.finish_reason;
+            }
+            // Some providers (e.g. with stream_options) emit usage on a
+            // trailing chunk. Keep the last non-null usage we see.
+            if (parsed?.usage) {
+              usage = parsed.usage;
+            }
+
+            // Forward the entire provider chunk verbatim.
+            sendSseEvent(res, 'chunk', parsed);
+          } catch {
+            // Ignore malformed chunks and continue streaming.
+          }
+        }
+      }
+    }
+
+    return { content, role, finishReason, usage, chunkCount };
+  }
+
+  try {
+    let inferenceResponse;
+    let selectedProvider = null;
+
+    // Walk the provider chain until one succeeds or all are exhausted.
+    let lastErr = null;
+    for (const provider of INFERENCE_CHAIN) {
+      try {
+        console.log(`[chat/stream-full] Trying ${provider.name} (${provider.model})...`);
+        inferenceResponse = await callInferenceStream(
+          provider.base,
+          provider.key,
+          provider.model,
+          messages,
+          abortController.signal,
+          true // include usage stats in the stream
+        );
+        selectedProvider = provider;
+        lastErr = null;
+        break; // success — stop trying
+      } catch (err) {
+        const status = err.statusCode;
+
+        console.warn(`[chat/stream-full] ${provider.name} failed (${status}): ${err.message}`);
+
+        // Same chain semantics as /api/chat/stream: 400/401 are hopeless and
+        // stop immediately; everything else falls through to the next tier.
+        const isHopeless = status === 400 || status === 401;
+
+        if (isHopeless) {
+          const code = status === 401 ? 'UNAUTHORIZED' : 'BAD_REQUEST';
+          sendSseEvent(res, 'error', { code, message: err.message });
+          return res.end();
+        }
+
+        lastErr = err;
+        // Continue to next provider in chain
+      }
+    }
+
+    if (!inferenceResponse) {
+      const message = lastErr?.message || 'All inference providers failed.';
+      console.error('[chat/stream-full] All providers exhausted:', message);
+      sendSseEvent(res, 'error', { code: 'UPSTREAM_ERROR', message });
+      return res.end();
+    }
+
+    const aggregate = await streamFullResponse(inferenceResponse);
+    console.log('[chat/stream-full] Stream complete. Forwarded', aggregate.chunkCount, 'chunks');
+    sendSseEvent(res, 'end', {
+      done: true,
+      provider: selectedProvider?.name || null,
+      model: selectedProvider?.model || null,
+      role: aggregate.role,
+      content: aggregate.content,
+      finishReason: aggregate.finishReason,
+      usage: aggregate.usage,
+      chunkCount: aggregate.chunkCount,
+    });
+    return res.end();
+  } catch (err) {
+    if (abortController.signal.aborted) {
+      return res.end();
+    }
+    const message = err instanceof Error ? err.message : 'Unknown streaming error.';
+    console.error('[chat/stream-full] Unexpected error:', message);
     sendSseEvent(res, 'error', { code: 'STREAM_FAILURE', message });
     return res.end();
   }
