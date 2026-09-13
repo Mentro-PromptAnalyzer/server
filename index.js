@@ -1132,10 +1132,17 @@ app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
 // assembled message, accumulated usage, finish_reason, and provider/model
 // metadata. Use this when the consumer needs the whole AI response JSON.
 //
+// Reasoning models (e.g. gpt-oss-20b on Groq) may emit their output in the
+// analysis channel (`delta.reasoning`) rather than `delta.content`, especially
+// for larger instruction-heavy prompts. The aggregation accumulates reasoning
+// separately and exposes it as a `reasoning` field on the `end` event. If
+// `content` is empty but `reasoning` is not, `content` falls back to the
+// reasoning text so clients reading `content` never receive a blank reply.
+//
 // SSE events:
 //   event: chunk  -> the raw provider chunk object (OpenAI-compatible)
 //   event: error  -> { code, message }
-//   event: end    -> { done, provider, model, content, role, finishReason, usage, chunkCount }
+//   event: end    -> { done, provider, model, content, reasoning, role, finishReason, usage, chunkCount }
 // ---------------------------------------------------------------------------
 app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
   console.log('[chat/stream-full] Received request with', req.body?.messages?.length, 'messages');
@@ -1187,6 +1194,7 @@ app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
     let buffer = '';
     let chunkCount = 0;
     let content = '';
+    let reasoning = '';
     let role = 'assistant';
     let finishReason = null;
     let usage = null;
@@ -1205,7 +1213,7 @@ app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
           if (!line.startsWith('data:')) continue;
           const data = line.slice(5).trim();
           if (data === '[DONE]') {
-            return { content, role, finishReason, usage, chunkCount };
+            return { content, reasoning, role, finishReason, usage, chunkCount };
           }
           try {
             const parsed = JSON.parse(data);
@@ -1217,6 +1225,15 @@ app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
             const deltaContent = choice?.delta?.content;
             if (typeof deltaContent === 'string') {
               content += deltaContent;
+            }
+            // Reasoning models (e.g. gpt-oss-20b on Groq) emit their output in
+            // the analysis channel (`delta.reasoning`) instead of
+            // `delta.content` — especially for larger instruction-heavy
+            // prompts. Accumulate it separately so a reasoning-only response
+            // is never silently dropped.
+            const deltaReasoning = choice?.delta?.reasoning;
+            if (typeof deltaReasoning === 'string') {
+              reasoning += deltaReasoning;
             }
             if (choice?.delta?.role) {
               role = choice.delta.role;
@@ -1239,7 +1256,7 @@ app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
       }
     }
 
-    return { content, role, finishReason, usage, chunkCount };
+    return { content, reasoning, role, finishReason, usage, chunkCount };
   }
 
   try {
@@ -1290,13 +1307,26 @@ app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
     }
 
     const aggregate = await streamFullResponse(inferenceResponse);
-    console.log('[chat/stream-full] Stream complete. Forwarded', aggregate.chunkCount, 'chunks');
+
+    // Fall back to reasoning-channel text when the model produced no content
+    // delta (reasoning-only responses). This keeps `content` usable for
+    // clients that read it directly, while `reasoning` is always exposed
+    // separately so clients can prefer content and fall back to reasoning.
+    const finalContent = aggregate.content.length > 0 ? aggregate.content : aggregate.reasoning;
+    const usedReasoningFallback = aggregate.content.length === 0 && aggregate.reasoning.length > 0;
+
+    console.log(
+      '[chat/stream-full] Stream complete. Forwarded',
+      aggregate.chunkCount,
+      'chunks' + (usedReasoningFallback ? ' (content empty — fell back to reasoning channel)' : '')
+    );
     sendSseEvent(res, 'end', {
       done: true,
       provider: selectedProvider?.name || null,
       model: selectedProvider?.model || null,
       role: aggregate.role,
-      content: aggregate.content,
+      content: finalContent,
+      reasoning: aggregate.reasoning,
       finishReason: aggregate.finishReason,
       usage: aggregate.usage,
       chunkCount: aggregate.chunkCount,

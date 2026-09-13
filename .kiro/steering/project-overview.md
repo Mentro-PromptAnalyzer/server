@@ -49,7 +49,8 @@ Backend proxy server for Mentro, a prompt analysis web app. Deployed to Fly.io a
 - Same multi-tier inference chain, chain semantics, limits, rate limit, and auth as `/api/chat/stream`. Use this when the consumer needs the whole AI response JSON, not just the reply text.
 - Unlike `/api/chat/stream` (which extracts only `choices[0].delta.content` and emits `event: token`), this endpoint forwards the **entire provider chunk object** verbatim on each `event: chunk`.
 - SSE events: `event: chunk` (raw OpenAI-compatible chunk), `event: error` (`{ code, message }`), `event: end`.
-- The `event: end` payload is an aggregated response object: `{ done, provider, model, role, content, finishReason, usage, chunkCount }` — `content` is the fully assembled message text, `usage` is the provider's token usage (or `null`), `finishReason` is the stop reason (or `null`).
+- The `event: end` payload is an aggregated response object: `{ done, provider, model, role, content, reasoning, finishReason, usage, chunkCount }` — `content` is the fully assembled message text, `reasoning` is the accumulated analysis-channel text, `usage` is the provider's token usage (or `null`), `finishReason` is the stop reason (or `null`).
+- Reasoning-model handling: reasoning models (e.g. `openai/gpt-oss-20b` on Groq) may stream output in the analysis channel (`delta.reasoning`) instead of `delta.content`, especially for larger instruction-heavy prompts. The aggregation accumulates `reasoning` separately and always includes it on `end`. If `content` is empty but `reasoning` is non-empty, `content` falls back to the reasoning text, so clients reading `content` never get a blank reply.
 - Requests usage stats by sending `stream_options: { include_usage: true }` to the provider (via the shared `callInferenceStream(..., includeUsage=true)`). Providers that don't support it simply return `usage: null`.
 
 ### `/api/count-tokens`
