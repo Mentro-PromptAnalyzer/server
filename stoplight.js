@@ -193,4 +193,11 @@ router.get('/events/:token', (req, res) => {
   });
 });
 
-module.exports = { stoplightRouter: router };
+function closeStoplightStreams() {
+  for (const clients of sseClients.values()) {
+    for (const res of clients) res.end();
+  }
+  sseClients.clear();
+}
+
+module.exports = { stoplightRouter: router, closeStoplightStreams };

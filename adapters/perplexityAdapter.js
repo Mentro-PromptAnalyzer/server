@@ -13,7 +13,10 @@ async function countTokensPerplexity(messages, model) {
   const timeout = setTimeout(() => controller.abort(), 15_000);
 
   try {
-    const response = await fetch('https://api.perplexity.ai/chat/completions', {
+    const url = process.env.MENTRO_FIXTURE_ORIGIN
+      ? `${process.env.MENTRO_FIXTURE_ORIGIN}/perplexity-count-tokens`
+      : 'https://api.perplexity.ai/chat/completions';
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -21,6 +24,7 @@ async function countTokensPerplexity(messages, model) {
       },
       body: JSON.stringify({ model, messages, max_tokens: 1 }),
       signal: controller.signal,
+      redirect: process.env.MENTRO_FIXTURE_ORIGIN ? 'error' : 'follow',
     });
 
     if (!response.ok) {
@@ -29,6 +33,9 @@ async function countTokensPerplexity(messages, model) {
     }
 
     const data = await response.json();
+    if (!Number.isInteger(data?.usage?.prompt_tokens) || data.usage.prompt_tokens < 0) {
+      throw new Error('Perplexity API returned an invalid token count');
+    }
     const result = { inputTokens: data.usage.prompt_tokens };
 
     if (data.usage?.cost) {
@@ -42,7 +49,7 @@ async function countTokensPerplexity(messages, model) {
     return result;
   } catch (err) {
     if (err.name === 'AbortError') {
-      throw new Error('Perplexity API request timed out after 15 seconds');
+      throw new Error('Perplexity API request timed out after 15 seconds', { cause: err });
     }
     throw err;
   } finally {
