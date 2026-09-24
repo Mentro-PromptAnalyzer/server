@@ -8,7 +8,7 @@ RUN npm ci --omit=dev --no-audit --no-fund
 
 FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS fixture
 WORKDIR /fixture
-COPY fixtures/server.js ./server.js
+COPY fixtures/server.js fixtures/browser-session.js ./
 USER node
 EXPOSE 3004
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \

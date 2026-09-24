@@ -18,6 +18,9 @@ services:
     mem_limit: 128m
     networks:
       - pilot
+      - preview
+    ports:
+      - '127.0.0.1:3004:3004'
     restart: unless-stopped
     stop_grace_period: 5s
     logging:

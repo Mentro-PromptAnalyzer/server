@@ -1,6 +1,7 @@
 // Deterministic upstreams for the local Compose pilot. This process has no
-// published host port and is not copied into the production server image.
+// production credentials and is not copied into the production server image.
 const http = require('node:http');
+const { handleBrowserSession, sessionUser } = require('./browser-session');
 
 const TOKEN = 'local-fixture-token';
 const ANON_KEY = 'local-fixture-anon';
@@ -26,6 +27,27 @@ function writeSse(res, data) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://fixture:3004');
+  const origin = req.headers.origin;
+  if (origin) {
+    if (origin !== 'http://127.0.0.1:8081')
+      return json(res, 403, { error: 'Unapproved fixture origin' });
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'authorization,apikey,content-type,x-client-info,prefer,x-supabase-api-version,accept-profile,content-profile'
+    );
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+  }
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    return res.end();
+  }
+  try {
+    if (await handleBrowserSession(req, res, url, json, readJson)) return;
+  } catch {
+    return json(res, 400, { message: 'Invalid fixture request' });
+  }
 
   if (url.pathname === '/healthz') return json(res, 200, { ok: true });
   if (url.pathname === '/__fixture/metrics') {
@@ -33,10 +55,12 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/auth/v1/user') {
-    if (req.headers.authorization !== `Bearer ${TOKEN}` || req.headers.apikey !== ANON_KEY) {
+    const browserUser = sessionUser(req);
+    const validKey = [ANON_KEY, 'sb_publishable_local_fixture'].includes(req.headers.apikey);
+    if ((!browserUser && req.headers.authorization !== `Bearer ${TOKEN}`) || !validKey) {
       return json(res, 401, { error: 'Invalid fixture token' });
     }
-    return json(res, 200, { id: 'fixture-user-1' });
+    return json(res, 200, browserUser || { id: 'fixture-user-1' });
   }
 
   if (url.pathname === '/share-page') {
