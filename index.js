@@ -11,7 +11,32 @@ const { getProviderConfig } = require('./providerRegistry');
 const { countTokensGemini } = require('./adapters/geminiAdapter');
 const { countTokensPerplexity } = require('./adapters/perplexityAdapter');
 const { estimateTokensFromMessages } = require('./adapters/localEstimator');
-const { stoplightRouter } = require('./stoplight');
+const { stoplightRouter, closeStoplightStreams } = require('./stoplight');
+
+// Local integration runs may replace outbound destinations with the isolated
+// Compose fixture service. Production cannot enable this path accidentally.
+const FIXTURE_ORIGIN = process.env.MENTRO_FIXTURE_ORIGIN || null;
+if (FIXTURE_ORIGIN) {
+  const parsed = new URL(FIXTURE_ORIGIN);
+  if (
+    process.env.NODE_ENV !== 'test' ||
+    parsed.protocol !== 'http:' ||
+    parsed.hostname !== 'fixture' ||
+    parsed.port !== '3004' ||
+    parsed.pathname !== '/' ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error('MENTRO_FIXTURE_ORIGIN is only allowed as http://fixture:3004 in test mode.');
+  }
+}
+if (process.env.NODE_ENV === 'test') {
+  if (!FIXTURE_ORIGIN || process.env.SUPABASE_URL !== FIXTURE_ORIGIN) {
+    throw new Error(
+      'Test mode requires the isolated fixture origin for share, inference, and auth.'
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Supabase client
@@ -36,12 +61,17 @@ const CHROMIUM_PATH = process.env.CHROMIUM_PATH || '/usr/bin/chromium';
 // Warm browser pool — launch Chromium once, reuse across requests
 // ---------------------------------------------------------------------------
 let _browser = null;
+let _browserLaunch = null;
+let shuttingDown = false;
+const activeStreamControllers = new Set();
 
 async function getWarmBrowser() {
+  if (shuttingDown) throw new Error('Server is shutting down.');
   if (_browser && _browser.connected) return _browser;
+  if (_browserLaunch) return _browserLaunch;
 
   console.log('[browser] Launching warm Chromium instance...');
-  _browser = await puppeteer.launch({
+  _browserLaunch = puppeteer.launch({
     executablePath: CHROMIUM_PATH,
     headless: 'new',
     args: [
@@ -53,6 +83,12 @@ async function getWarmBrowser() {
       '--window-size=1920,1080',
     ],
   });
+
+  try {
+    _browser = await _browserLaunch;
+  } finally {
+    _browserLaunch = null;
+  }
 
   _browser.on('disconnected', () => {
     console.log('[browser] Chromium disconnected, will relaunch on next request');
@@ -94,7 +130,7 @@ const PORT = process.env.PORT || 3001;
 // are skipped — existing deployments keep working unchanged.
 // ---------------------------------------------------------------------------
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
+const GROQ_BASE_URL = FIXTURE_ORIGIN || 'https://api.groq.com/openai/v1';
 // Instruct model (not a gpt-oss reasoning model). gpt-oss-20b only emitted
 // analysis-channel reasoning and never a final answer or tool calls, which
 // broke agentic/tool-using clients. llama-3.3-70b-versatile emits normal
@@ -102,9 +138,9 @@ const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
 // a fenced block"), returning finish_reason "stop" and usage stats.
 const GROQ_MODEL = 'llama-3.3-70b-versatile';
 
-const CEREBRAS_BASE_URL = 'https://api.cerebras.ai/v1';
+const CEREBRAS_BASE_URL = FIXTURE_ORIGIN || 'https://api.cerebras.ai/v1';
 const CEREBRAS_MODEL = 'gpt-oss-120b';
-const TOGETHER_BASE_URL = 'https://api.together.xyz/v1';
+const TOGETHER_BASE_URL = FIXTURE_ORIGIN || 'https://api.together.xyz/v1';
 const TOGETHER_MODEL = 'meta-llama/Llama-3.3-70B-Instruct-Turbo';
 
 // Build the provider chain — each entry is { base, key, model, name }.
@@ -156,7 +192,7 @@ const MAX_MESSAGES = 50;
 const MAX_CONTENT_LENGTH = 32000;
 const MAX_TOTAL_CONTENT = 128000;
 
-app.use(express.json({ limit: '256kb' }));
+app.use(express.json({ limit: '256kb', strict: false }));
 
 // ---------------------------------------------------------------------------
 // Auth middleware — verifies Supabase JWT via /auth/v1/user
@@ -239,6 +275,58 @@ function sendSseEvent(res, event, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
+function mergeToolCallDeltas(toolCalls, deltas) {
+  for (const delta of deltas || []) {
+    const index = delta.index ?? 0;
+    const current = toolCalls.get(index) || { index, function: { name: '', arguments: '' } };
+    if (delta.id) current.id = delta.id;
+    if (delta.type) current.type = delta.type;
+    if (delta.function?.name) current.function.name = delta.function.name;
+    if (delta.function?.arguments) current.function.arguments += delta.function.arguments;
+    toolCalls.set(index, current);
+  }
+}
+
+const configuredInferenceTimeout = process.env.MENTRO_INFERENCE_TIMEOUT_MS;
+if (configuredInferenceTimeout && process.env.NODE_ENV !== 'test') {
+  throw new Error('MENTRO_INFERENCE_TIMEOUT_MS is only configurable in test mode.');
+}
+const INFERENCE_TIMEOUT_MS = configuredInferenceTimeout
+  ? Number(configuredInferenceTimeout)
+  : 30_000;
+if (
+  !Number.isInteger(INFERENCE_TIMEOUT_MS) ||
+  INFERENCE_TIMEOUT_MS < 500 ||
+  INFERENCE_TIMEOUT_MS > 30_000
+) {
+  throw new Error('MENTRO_INFERENCE_TIMEOUT_MS must be an integer from 500 to 30000.');
+}
+
+function createStreamAbortState(res) {
+  const abortController = new AbortController();
+  const state = {
+    abortController,
+    clientDisconnected: false,
+    timedOut: false,
+    cleanup: () => {
+      clearTimeout(timeout);
+      activeStreamControllers.delete(abortController);
+    },
+  };
+  activeStreamControllers.add(abortController);
+  const timeout = setTimeout(() => {
+    state.timedOut = true;
+    abortController.abort();
+  }, INFERENCE_TIMEOUT_MS);
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      state.clientDisconnected = true;
+      abortController.abort();
+    }
+  });
+  return state;
+}
+
 function validateChatMessages(messages) {
   if (!Array.isArray(messages) || messages.length === 0) {
     return { ok: false, error: 'messages must be a non-empty array.' };
@@ -318,7 +406,9 @@ app.use(
   cors({
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
-      if (/^http:\/\/localhost(:\d+)?$/.test(origin)) return callback(null, true);
+      if (/^http:\/\/(?:localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+        return callback(null, true);
+      }
       // Allow Vercel preview and production deployments
       if (origin.endsWith('.vercel.app')) return callback(null, true);
       // Allow Chrome extensions (background service workers may send no origin,
@@ -362,7 +452,6 @@ function extractMessagesFromHtml(html) {
       // Walk backwards to find the opening \" of the message string
       // The message starts after a ,\" or [\" sequence
       let start = idx - 1;
-      let depth = 0;
       let found = false;
 
       while (start > 0 && idx - start < 100000) {
@@ -575,10 +664,19 @@ app.get('/api/fetch-share', async (req, res) => {
     return res.status(400).json({ error: reason });
   }
 
+  // Keep URL validation and platform-specific parsing on the original share
+  // URL, while the isolated local run fetches a controlled page only.
+  const targetUrl = FIXTURE_ORIGIN
+    ? `${FIXTURE_ORIGIN}/share-page?${new URLSearchParams({
+        host: new URL(url).hostname,
+        path: new URL(url).pathname,
+      })}`
+    : url;
+
   // ── Strategy 1: Fast HTTP fetch ──────────────────────────────────────────
   try {
     console.log(`[fetch-share] Trying fast HTTP fetch for: ${url}`);
-    const httpResponse = await fetch(url, {
+    const httpResponse = await fetch(targetUrl, {
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -586,7 +684,7 @@ app.get('/api/fetch-share', async (req, res) => {
         'Accept-Language': 'en-US,en;q=0.9',
       },
       signal: AbortSignal.timeout(15000),
-      redirect: 'follow',
+      redirect: FIXTURE_ORIGIN ? 'error' : 'follow',
     });
 
     if (httpResponse.ok) {
@@ -638,6 +736,10 @@ app.get('/api/fetch-share', async (req, res) => {
     // Block images, fonts, and media to speed up load
     await page.setRequestInterception(true);
     page.on('request', (req) => {
+      if (FIXTURE_ORIGIN && new URL(req.url()).origin !== FIXTURE_ORIGIN) {
+        req.abort();
+        return;
+      }
       const type = req.resourceType();
       if (['image', 'font', 'media', 'stylesheet'].includes(type)) {
         req.abort();
@@ -651,7 +753,7 @@ app.get('/api/fetch-share', async (req, res) => {
     );
 
     // Use domcontentloaded instead of networkidle2 for faster loading
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
     // Detect platform from URL to choose wait strategy
     const parsedUrl = new URL(url);
@@ -742,7 +844,9 @@ app.get('/api/fetch-share', async (req, res) => {
             };
             walk(data);
             if (results.length > 0) return { messages: results, strategy: 'chatgpt-next-data' };
-          } catch {}
+          } catch {
+            // Malformed embedded page data may still have usable DOM content.
+          }
         }
       }
 
@@ -985,7 +1089,9 @@ async function callInferenceStream(baseUrl, apiKey, model, messages, signal, inc
       // Log the full error body so we can diagnose key/quota issues
       console.warn(`[inference] ${response.status} error body:`, JSON.stringify(upstream));
       detail = upstream?.error?.message || upstream?.message || detail;
-    } catch {}
+    } catch {
+      // Preserve the HTTP status when the upstream error body is not JSON.
+    }
     const err = new Error(detail);
     err.statusCode = response.status;
     throw err;
@@ -1020,16 +1126,12 @@ app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
 
-  const abortController = new AbortController();
-  res.on('close', () => {
-    if (!res.writableEnded) {
-      abortController.abort();
-    }
-  });
+  const streamState = createStreamAbortState(res);
+  const { abortController } = streamState;
 
   /**
    * Stream tokens from a fetch Response to the SSE client.
-   * Returns the number of tokens sent.
+   * Returns content, usage and tool metadata without discarding token events.
    */
   async function streamResponse(inferenceResponse) {
     const reader = inferenceResponse.body?.getReader();
@@ -1042,10 +1144,13 @@ app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
     const decoder = new TextDecoder();
     let buffer = '';
     let tokenCount = 0;
+    let finishReason = null;
+    let usage = null;
+    const toolCalls = new Map();
 
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) throw new Error('Provider stream ended before [DONE].');
 
       buffer += decoder.decode(value, { stream: true });
       const events = buffer.split(/\r?\n\r?\n/);
@@ -1057,23 +1162,33 @@ app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
           if (!line.startsWith('data:')) continue;
           const data = line.slice(5).trim();
           if (data === '[DONE]') {
-            return tokenCount;
+            return {
+              tokenCount,
+              finishReason,
+              usage,
+              toolCalls: [...toolCalls.values()],
+            };
           }
           try {
             const parsed = JSON.parse(data);
-            const text = parsed?.choices?.[0]?.delta?.content;
+            const choice = parsed?.choices?.[0];
+            const text = choice?.delta?.content;
             if (typeof text === 'string' && text.length > 0) {
               tokenCount++;
               sendSseEvent(res, 'token', { text });
             }
+            if (choice?.delta?.tool_calls?.length) {
+              mergeToolCallDeltas(toolCalls, choice.delta.tool_calls);
+              sendSseEvent(res, 'tool_call', { toolCalls: choice.delta.tool_calls });
+            }
+            if (choice?.finish_reason) finishReason = choice.finish_reason;
+            if (parsed?.usage) usage = parsed.usage;
           } catch {
             // Ignore malformed chunks and continue streaming.
           }
         }
       }
     }
-
-    return tokenCount;
   }
 
   try {
@@ -1094,6 +1209,7 @@ app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
         lastErr = null;
         break; // success — stop trying
       } catch (err) {
+        if (abortController.signal.aborted) throw err;
         const status = err.statusCode;
 
         console.warn(`[chat/stream] ${provider.name} failed (${status}): ${err.message}`);
@@ -1123,18 +1239,24 @@ app.post('/api/chat/stream', requireAuth, rateLimit, async (req, res) => {
       return res.end();
     }
 
-    const tokenCount = await streamResponse(inferenceResponse);
-    console.log('[chat/stream] Stream complete. Sent', tokenCount, 'tokens');
-    sendSseEvent(res, 'end', { done: true });
+    const aggregate = await streamResponse(inferenceResponse);
+    console.log('[chat/stream] Stream complete. Sent', aggregate.tokenCount, 'tokens');
+    sendSseEvent(res, 'end', { done: true, ...aggregate });
     return res.end();
   } catch (err) {
-    if (abortController.signal.aborted) {
+    if (streamState.clientDisconnected) {
+      return res.end();
+    }
+    if (streamState.timedOut) {
+      sendSseEvent(res, 'error', { code: 'TIMEOUT', message: 'Inference timed out.' });
       return res.end();
     }
     const message = err instanceof Error ? err.message : 'Unknown streaming error.';
     console.error('[chat/stream] Unexpected error:', message);
     sendSseEvent(res, 'error', { code: 'STREAM_FAILURE', message });
     return res.end();
+  } finally {
+    streamState.cleanup();
   }
 });
 
@@ -1184,12 +1306,8 @@ app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
 
-  const abortController = new AbortController();
-  res.on('close', () => {
-    if (!res.writableEnded) {
-      abortController.abort();
-    }
-  });
+  const streamState = createStreamAbortState(res);
+  const { abortController } = streamState;
 
   /**
    * Stream full provider chunks from a fetch Response to the SSE client.
@@ -1212,10 +1330,11 @@ app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
     let role = 'assistant';
     let finishReason = null;
     let usage = null;
+    const toolCalls = new Map();
 
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) throw new Error('Provider stream ended before [DONE].');
 
       buffer += decoder.decode(value, { stream: true });
       const events = buffer.split(/\r?\n\r?\n/);
@@ -1227,7 +1346,15 @@ app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
           if (!line.startsWith('data:')) continue;
           const data = line.slice(5).trim();
           if (data === '[DONE]') {
-            return { content, reasoning, role, finishReason, usage, chunkCount };
+            return {
+              content,
+              reasoning,
+              role,
+              finishReason,
+              usage,
+              chunkCount,
+              toolCalls: [...toolCalls.values()],
+            };
           }
           try {
             const parsed = JSON.parse(data);
@@ -1255,6 +1382,7 @@ app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
             if (choice?.finish_reason) {
               finishReason = choice.finish_reason;
             }
+            mergeToolCallDeltas(toolCalls, choice?.delta?.tool_calls);
             // Some providers (e.g. with stream_options) emit usage on a
             // trailing chunk. Keep the last non-null usage we see.
             if (parsed?.usage) {
@@ -1269,8 +1397,6 @@ app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
         }
       }
     }
-
-    return { content, reasoning, role, finishReason, usage, chunkCount };
   }
 
   try {
@@ -1294,6 +1420,7 @@ app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
         lastErr = null;
         break; // success — stop trying
       } catch (err) {
+        if (abortController.signal.aborted) throw err;
         const status = err.statusCode;
 
         console.warn(`[chat/stream-full] ${provider.name} failed (${status}): ${err.message}`);
@@ -1343,17 +1470,24 @@ app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
       reasoning: aggregate.reasoning,
       finishReason: aggregate.finishReason,
       usage: aggregate.usage,
+      toolCalls: aggregate.toolCalls,
       chunkCount: aggregate.chunkCount,
     });
     return res.end();
   } catch (err) {
-    if (abortController.signal.aborted) {
+    if (streamState.clientDisconnected) {
+      return res.end();
+    }
+    if (streamState.timedOut) {
+      sendSseEvent(res, 'error', { code: 'TIMEOUT', message: 'Inference timed out.' });
       return res.end();
     }
     const message = err instanceof Error ? err.message : 'Unknown streaming error.';
     console.error('[chat/stream-full] Unexpected error:', message);
     sendSseEvent(res, 'error', { code: 'STREAM_FAILURE', message });
     return res.end();
+  } finally {
+    streamState.cleanup();
   }
 });
 
@@ -1568,10 +1702,54 @@ app.get('/api/supabase-health', async (_req, res) => {
 // ---------------------------------------------------------------------------
 // Health check
 // ---------------------------------------------------------------------------
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, supabase: !!supabase });
+app.get('/api/health', async (_req, res) => {
+  if (shuttingDown) return res.status(503).json({ ok: false, browser: false });
+  try {
+    const browser = await getWarmBrowser();
+    const pages = await browser.pages();
+    return res.json({
+      ok: true,
+      browser: browser.connected,
+      browserPages: pages.length,
+      supabaseConfigured: !!supabase,
+    });
+  } catch (err) {
+    return res.status(503).json({ ok: false, browser: false, error: err.message });
+  }
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Mentro proxy server running on http://localhost:${PORT}`);
 });
+server.requestTimeout = 60_000;
+server.headersTimeout = 10_000;
+
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log('[server] Shutting down');
+  const force = setTimeout(() => {
+    console.error('[server] Graceful shutdown timed out');
+    server.closeAllConnections();
+    _browser?.process()?.kill('SIGKILL');
+    process.exit(1);
+  }, 12_000);
+
+  for (const controller of activeStreamControllers) controller.abort();
+  closeStoplightStreams();
+  const serverClosed = new Promise((resolve) => server.close(resolve));
+  try {
+    const browser = _browser || (await _browserLaunch?.catch(() => null));
+    if (browser) await browser.close();
+    await serverClosed;
+    process.exitCode = 0;
+  } catch (err) {
+    console.error('[server] Shutdown error:', err.message);
+    process.exitCode = 1;
+  } finally {
+    clearTimeout(force);
+  }
+}
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

@@ -1,0 +1,45 @@
+name: Validate Mentro server
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality-and-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      MENTRO_REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run check:syntax
+      - run: npm test
+
+      - name: Build and start isolated production image with fixtures
+        run: docker compose up --build --detach --wait --wait-timeout 60
+
+      - name: Check browser, token, and streaming contracts
+        run: npm run test:container
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Stop isolated containers
+        if: always()
+        run: docker compose down

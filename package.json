@@ -7,7 +7,10 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "test": "vitest --run --passWithNoTests",
+    "test": "vitest --run tests/unit",
+    "test:container": "vitest --run tests/container",
+    "check:syntax": "node --check index.js && node --check stoplight.js && node --check providerRegistry.js && node --check validateTokenRequest.js && node --check adapters/geminiAdapter.js && node --check adapters/perplexityAdapter.js && node --check fixtures/server.js",
+    "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
@@ -23,7 +26,10 @@
     "puppeteer-extra-plugin-stealth": "^2.11.2"
   },
   "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.11.0",
     "fast-check": "^4.1.1",
+    "globals": "17.12.0",
     "prettier": "^3.8.3",
     "vitest": "^3.2.1"
   }

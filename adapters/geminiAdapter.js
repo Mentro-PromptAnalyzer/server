@@ -14,7 +14,9 @@ async function countTokensGemini(messages, model) {
     parts: [{ text: msg.content }],
   }));
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:countTokens?key=${apiKey}`;
+  const url = process.env.MENTRO_FIXTURE_ORIGIN
+    ? `${process.env.MENTRO_FIXTURE_ORIGIN}/gemini-count-tokens`
+    : `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:countTokens?key=${apiKey}`;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
@@ -25,6 +27,7 @@ async function countTokensGemini(messages, model) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contents }),
       signal: controller.signal,
+      redirect: process.env.MENTRO_FIXTURE_ORIGIN ? 'error' : 'follow',
     });
 
     if (!response.ok) {
@@ -34,10 +37,13 @@ async function countTokensGemini(messages, model) {
     }
 
     const data = await response.json();
+    if (!Number.isInteger(data.totalTokens) || data.totalTokens < 0) {
+      throw new Error('Gemini API returned an invalid token count');
+    }
     return data.totalTokens;
   } catch (err) {
     if (err.name === 'AbortError') {
-      throw new Error('Gemini API request timed out after 10 seconds');
+      throw new Error('Gemini API request timed out after 10 seconds', { cause: err });
     }
     throw err;
   } finally {
