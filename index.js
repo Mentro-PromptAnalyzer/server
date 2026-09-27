@@ -105,6 +105,14 @@ getWarmBrowser().catch((err) => {
 });
 
 const app = express();
+const { formatHttpEvent } = require('./opsEvents');
+app.use((req, res, next) => {
+  const started = Date.now();
+  res.on('finish', () => {
+    process.stdout.write(formatHttpEvent(req.method, res.statusCode, Date.now() - started));
+  });
+  next();
+});
 const PORT = process.env.PORT || 3001;
 
 // ---------------------------------------------------------------------------

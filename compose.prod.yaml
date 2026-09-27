@@ -1,0 +1,36 @@
+name: mentro-server
+
+services:
+  api:
+    image: mentro-server:${MENTRO_REVISION:?Set MENTRO_REVISION to a checked merged main SHA}
+    build:
+      context: .
+      args:
+        VCS_REF: ${MENTRO_REVISION:?Set MENTRO_REVISION to a checked merged main SHA}
+    env_file:
+      - path: ./.env.production
+        required: true
+    environment:
+      NODE_ENV: production
+      PORT: '3001'
+      CORS_ORIGINS: https://mentro.elischiffler.dev
+    ports:
+      - '127.0.0.1:${MENTRO_API_PORT:-3001}:3001'
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,size=256m,mode=1777
+    shm_size: 256m
+    user: '1000:1000'
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    cpus: 1.0
+    mem_limit: 1g
+    restart: unless-stopped
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'

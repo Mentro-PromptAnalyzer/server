@@ -5,6 +5,7 @@
 !stoplight.js
 !providerRegistry.js
 !validateTokenRequest.js
+!opsEvents.js
 !adapters/
 !adapters/**
 !fixtures/
