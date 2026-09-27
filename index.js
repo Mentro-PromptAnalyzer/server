@@ -403,8 +403,7 @@ function validateShareUrl(rawUrl) {
 // CORS — allow any localhost port in dev, lock down in production
 // ---------------------------------------------------------------------------
 const configuredOrigins = new Set(
-  (process.env.CORS_ORIGINS || 'https://mentro.elischiffler.dev')
-    .split(',')
+  ['https://mentro.elischiffler.dev', ...(process.env.CORS_ORIGINS || '').split(',')]
     .map((value) => value.trim())
     .filter(Boolean)
 );

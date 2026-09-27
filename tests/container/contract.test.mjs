@@ -103,10 +103,14 @@ describe.sequential('real Mentro container with isolated upstream fixtures', () 
       headers: {
         Origin: 'https://mentro.elischiffler.dev',
         'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'authorization,content-type',
       },
     });
     expect(productionPreflight.headers.get('access-control-allow-origin')).toBe(
       'https://mentro.elischiffler.dev'
+    );
+    expect(productionPreflight.headers.get('access-control-allow-headers')).toBe(
+      'authorization,content-type'
     );
 
     const unapproved = await fetch(new URL('/api/health', base), {
