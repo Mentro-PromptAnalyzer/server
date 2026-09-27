@@ -28,7 +28,7 @@ ENV NODE_ENV=production \
     XDG_CACHE_HOME=/tmp/.cache
 WORKDIR /app
 COPY --from=dependencies /app/node_modules ./node_modules
-COPY package.json index.js stoplight.js providerRegistry.js validateTokenRequest.js opsEvents.js ./
+COPY package.json index.js stoplight.js providerRegistry.js validateTokenRequest.js opsEvents.js productionConfig.js ./
 COPY adapters ./adapters
 
 ARG VCS_REF=unversioned

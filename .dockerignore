@@ -6,6 +6,7 @@
 !providerRegistry.js
 !validateTokenRequest.js
 !opsEvents.js
+!productionConfig.js
 !adapters/
 !adapters/**
 !fixtures/

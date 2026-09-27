@@ -37,6 +37,7 @@ if (process.env.NODE_ENV === 'test') {
     );
   }
 }
+require('./productionConfig').assertProductionConfig(process.env);
 
 // ---------------------------------------------------------------------------
 // Supabase client
