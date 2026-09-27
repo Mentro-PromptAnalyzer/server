@@ -1,5 +1,12 @@
 # Mentro server local container pilot
 
+The Vercel frontend uses `https://mentro.elischiffler.dev`. The server permits
+that exact browser origin by default; `CORS_ORIGINS` accepts a comma-separated
+list of additional exact origins. The planned API hostname is
+`https://api.mentro.elischiffler.dev`, but DNS, TLS, and production deployment
+are not configured by this local pilot. Change the Vercel `VITE_PROXY_URL` only
+after that endpoint is healthy and its preflight response is verified.
+
 This runbook exercises the actual Node.js API and system Chromium image against disposable, deterministic upstreams. It does not validate live inference providers, real Supabase authentication, or a production reverse proxy. The existing `fly.toml` is not used by this Compose stack.
 
 ## Preflight and deadlines

@@ -402,6 +402,12 @@ function validateShareUrl(rawUrl) {
 // ---------------------------------------------------------------------------
 // CORS — allow any localhost port in dev, lock down in production
 // ---------------------------------------------------------------------------
+const configuredOrigins = new Set(
+  (process.env.CORS_ORIGINS || 'https://mentro.elischiffler.dev')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+);
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -409,13 +415,12 @@ app.use(
       if (/^http:\/\/(?:localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
         return callback(null, true);
       }
+      if (configuredOrigins.has(origin)) return callback(null, true);
       // Allow Vercel preview and production deployments
       if (origin.endsWith('.vercel.app')) return callback(null, true);
       // Allow Chrome extensions (background service workers may send no origin,
       // but content scripts and popups send chrome-extension://<id>)
       if (origin.startsWith('chrome-extension://')) return callback(null, true);
-      // Add your custom domain here if you have one:
-      // if (origin === "https://yourdomain.com") return callback(null, true);
       callback(new Error(`CORS: origin ${origin} not allowed`));
     },
   })

@@ -98,6 +98,17 @@ describe.sequential('real Mentro container with isolated upstream fixtures', () 
     });
     expect(preflight.headers.get('access-control-allow-origin')).toBe('http://127.0.0.1:8081');
 
+    const productionPreflight = await fetch(new URL('/api/chat/stream', base), {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://mentro.elischiffler.dev',
+        'Access-Control-Request-Method': 'POST',
+      },
+    });
+    expect(productionPreflight.headers.get('access-control-allow-origin')).toBe(
+      'https://mentro.elischiffler.dev'
+    );
+
     const unapproved = await fetch(new URL('/api/health', base), {
       headers: { Origin: 'https://unapproved.example' },
     });
