@@ -20,6 +20,8 @@ describe('public share request destinations', () => {
     'https://127.0.0.1/share/abc',
     'https://[::1]/share/abc',
     'https://metadata.google.internal/share/abc',
+    'https://localhost./admin',
+    'https://metadata.google.internal./share/abc',
     'https://chatgpt.com:8443/share/abc',
     'https://user:pass@chatgpt.com/share/abc',
     'https://unapproved.example/share/abc',
@@ -34,6 +36,8 @@ describe('public share request destinations', () => {
     'https://127.0.0.1/admin',
     'https://localhost/admin',
     'https://service.internal/admin',
+    'https://localhost./admin',
+    'https://service.internal./admin',
     'file:///etc/passwd',
   ])('blocks private browser subrequests: %s', (url) => {
     expect(safeBrowserRequestUrl(url, false)).toBe(false);

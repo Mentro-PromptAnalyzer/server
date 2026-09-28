@@ -12,7 +12,10 @@ const VALID_PATH_PREFIXES = ['/share/', '/chat/', '/app/', '/search/', '/i/grok/
 function parsePublicHttps(rawUrl) {
   try {
     const parsed = new URL(rawUrl);
-    const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    const host = parsed.hostname
+      .replace(/^\[|\]$/g, '')
+      .replace(/\.+$/, '')
+      .toLowerCase();
     if (
       parsed.protocol !== 'https:' ||
       parsed.port ||
