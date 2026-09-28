@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 const base = process.env.MENTRO_BASE_URL || 'http://127.0.0.1:3001';
 const token = 'local-fixture-token';
+const authHeaders = { Authorization: `Bearer ${token}` };
 
 async function jsonRequest(path, body, headers = {}) {
   const response = await fetch(new URL(path, base), {
@@ -88,6 +89,17 @@ describe.sequential('real Mentro container with isolated upstream fixtures', () 
     );
     expect(invalid.response.status).toBe(401);
 
+    expect(
+      (await jsonRequest('/api/count-tokens', { provider: 'gemini', messages: [] })).response.status
+    ).toBe(401);
+    expect(
+      (
+        await jsonRequest(
+          `/api/fetch-share?url=${encodeURIComponent('https://chatgpt.com/share/fast')}`
+        )
+      ).response.status
+    ).toBe(401);
+
     const preflight = await fetch(new URL('/api/chat/stream', base), {
       method: 'OPTIONS',
       headers: {
@@ -125,10 +137,11 @@ describe.sequential('real Mentro container with isolated upstream fixtures', () 
       ['gemini', 17, 'provider_count'],
       ['perplexity', 23, 'provider_count'],
     ]) {
-      const { response, body } = await jsonRequest('/api/count-tokens', {
-        provider,
-        messages: [{ role: 'user', content: 'hello world' }],
-      });
+      const { response, body } = await jsonRequest(
+        '/api/count-tokens',
+        { provider, messages: [{ role: 'user', content: 'hello world' }] },
+        authHeaders
+      );
       expect(response.status).toBe(200);
       expect(body).toMatchObject({ provider, inputTokens: expected, estimationType });
       expect(body.model).toEqual(expect.any(String));
@@ -142,7 +155,7 @@ describe.sequential('real Mentro container with isolated upstream fixtures', () 
         messages: [{ role: 'tool', content: 'hello' }],
       },
     ]) {
-      const { response, body } = await jsonRequest('/api/count-tokens', malformed);
+      const { response, body } = await jsonRequest('/api/count-tokens', malformed, authHeaders);
       expect(response.status).toBe(400);
       expect(body.error).toEqual(expect.any(String));
     }
@@ -156,20 +169,26 @@ describe.sequential('real Mentro container with isolated upstream fixtures', () 
     ]) {
       const target = `https://chatgpt.com${path}`;
       const { response, body } = await jsonRequest(
-        `/api/fetch-share?url=${encodeURIComponent(target)}`
+        `/api/fetch-share?url=${encodeURIComponent(target)}`,
+        undefined,
+        authHeaders
       );
       expect(response.status).toBe(200);
       expect(body.html).toContain(`You: ${text}`);
       await waitForBrowserPages(baseline);
     }
     const gemini = await jsonRequest(
-      `/api/fetch-share?url=${encodeURIComponent('https://gemini.google.com/share/browser')}`
+      `/api/fetch-share?url=${encodeURIComponent('https://gemini.google.com/share/browser')}`,
+      undefined,
+      authHeaders
     );
     expect(gemini.response.status).toBe(200);
     expect(gemini.body.html).toContain('You: Compare two controlled fixture ideas');
     await waitForBrowserPages(baseline);
     const unsupported = await jsonRequest(
-      `/api/fetch-share?url=${encodeURIComponent('https://unapproved.example/share/id')}`
+      `/api/fetch-share?url=${encodeURIComponent('https://unapproved.example/share/id')}`,
+      undefined,
+      authHeaders
     );
     expect(unsupported.response.status).toBe(400);
   }, 25_000);
@@ -178,7 +197,9 @@ describe.sequential('real Mentro container with isolated upstream fixtures', () 
     const baseline = (await jsonRequest('/api/health')).body.browserPages;
     const target = 'https://chatgpt.com/share/no-content';
     const { response, body } = await jsonRequest(
-      `/api/fetch-share?url=${encodeURIComponent(target)}`
+      `/api/fetch-share?url=${encodeURIComponent(target)}`,
+      undefined,
+      authHeaders
     );
     expect(response.status).toBe(502);
     expect(body.error).toMatch(/could not extract/i);
@@ -190,7 +211,9 @@ describe.sequential('real Mentro container with isolated upstream fixtures', () 
     const started = Date.now();
     const target = 'https://chatgpt.com/share/hang';
     const { response, body } = await jsonRequest(
-      `/api/fetch-share?url=${encodeURIComponent(target)}`
+      `/api/fetch-share?url=${encodeURIComponent(target)}`,
+      undefined,
+      authHeaders
     );
     expect(response.status).toBe(502);
     expect(body.error).toMatch(/could not load/i);

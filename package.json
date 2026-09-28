@@ -9,7 +9,7 @@
     "dev": "node --watch index.js",
     "test": "vitest --run tests/unit",
     "test:container": "vitest --run tests/container",
-    "check:syntax": "node --check index.js && node --check opsEvents.js && node --check productionConfig.js && node --check stoplight.js && node --check providerRegistry.js && node --check validateTokenRequest.js && node --check adapters/geminiAdapter.js && node --check adapters/perplexityAdapter.js && node --check fixtures/server.js",
+    "check:syntax": "node --check index.js && node --check shareUrlSafety.js && node --check opsEvents.js && node --check productionConfig.js && node --check stoplight.js && node --check providerRegistry.js && node --check validateTokenRequest.js && node --check adapters/geminiAdapter.js && node --check adapters/perplexityAdapter.js && node --check fixtures/server.js",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
