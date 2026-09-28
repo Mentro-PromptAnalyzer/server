@@ -12,6 +12,11 @@ const { countTokensGemini } = require('./adapters/geminiAdapter');
 const { countTokensPerplexity } = require('./adapters/perplexityAdapter');
 const { estimateTokensFromMessages } = require('./adapters/localEstimator');
 const { stoplightRouter, closeStoplightStreams } = require('./stoplight');
+const {
+  validateShareUrl,
+  safeBrowserRequestUrl,
+  fetchShareWithSafeRedirects,
+} = require('./shareUrlSafety');
 
 // Local integration runs may replace outbound destinations with the isolated
 // Compose fixture service. Production cannot enable this path accidentally.
@@ -375,39 +380,6 @@ function validateChatMessages(messages) {
 // ---------------------------------------------------------------------------
 // Security: allowlist of permitted hostnames and path prefixes
 // ---------------------------------------------------------------------------
-const ALLOWED_HOSTNAMES = new Set([
-  'chatgpt.com',
-  'chat.openai.com',
-  'gemini.google.com',
-  'www.perplexity.ai',
-  'perplexity.ai',
-]);
-
-const VALID_PATH_PREFIXES = ['/share/', '/chat/', '/app/', '/search/', '/i/grok/share/'];
-
-function validateShareUrl(rawUrl) {
-  let parsed;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    return { valid: false, reason: 'Invalid URL format.' };
-  }
-  if (parsed.protocol !== 'https:') {
-    return { valid: false, reason: 'Only HTTPS URLs are allowed.' };
-  }
-  if (!ALLOWED_HOSTNAMES.has(parsed.hostname)) {
-    return {
-      valid: false,
-      reason: `Unsupported platform. We support ChatGPT, Claude, Gemini, Grok, and Perplexity.`,
-    };
-  }
-  const hasValidPath = VALID_PATH_PREFIXES.some((prefix) => parsed.pathname.startsWith(prefix));
-  if (!hasValidPath) {
-    return { valid: false, reason: "That doesn't look like a valid share link." };
-  }
-  return { valid: true, reason: null };
-}
-
 // ---------------------------------------------------------------------------
 // CORS — allow any localhost port in dev, lock down in production
 // ---------------------------------------------------------------------------
@@ -665,7 +637,7 @@ function extractMessagesFromHtml(html) {
   return { messages: null, strategy: 'none' };
 }
 
-app.get('/api/fetch-share', async (req, res) => {
+app.get('/api/fetch-share', requireAuth, rateLimit, async (req, res) => {
   const { url } = req.query;
 
   if (!url || typeof url !== 'string') {
@@ -688,17 +660,25 @@ app.get('/api/fetch-share', async (req, res) => {
 
   // ── Strategy 1: Fast HTTP fetch ──────────────────────────────────────────
   try {
-    console.log(`[fetch-share] Trying fast HTTP fetch for: ${url}`);
-    const httpResponse = await fetch(targetUrl, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
+    console.log(`[fetch-share] Trying fast HTTP fetch for platform ${new URL(url).hostname}`);
+    const { response: httpResponse, blocked } = await fetchShareWithSafeRedirects(
+      targetUrl,
+      {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        signal: AbortSignal.timeout(15000),
       },
-      signal: AbortSignal.timeout(15000),
-      redirect: FIXTURE_ORIGIN ? 'error' : 'follow',
-    });
+      fetch,
+      FIXTURE_ORIGIN
+    );
+
+    if (blocked) {
+      return res.status(400).json({ error: 'Share URL redirected outside supported share pages.' });
+    }
 
     if (httpResponse.ok) {
       const html = await httpResponse.text();
@@ -735,7 +715,7 @@ app.get('/api/fetch-share', async (req, res) => {
       console.log(`[fetch-share] Fast fetch failed with status ${httpResponse.status}`);
     }
   } catch (err) {
-    console.log(`[fetch-share] Fast fetch error: ${err.message}`);
+    console.log(`[fetch-share] Fast fetch error: ${err?.name || 'UnknownError'}`);
   }
 
   // ── Strategy 2: Puppeteer rendering (fallback) ──────────────────────────
@@ -750,6 +730,10 @@ app.get('/api/fetch-share', async (req, res) => {
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       if (FIXTURE_ORIGIN && new URL(req.url()).origin !== FIXTURE_ORIGIN) {
+        req.abort();
+        return;
+      }
+      if (!FIXTURE_ORIGIN && !safeBrowserRequestUrl(req.url(), req.isNavigationRequest())) {
         req.abort();
         return;
       }
@@ -1015,49 +999,24 @@ app.get('/api/fetch-share', async (req, res) => {
     // If no messages found, log what the page looks like for debugging
     const debugInfo = await page.evaluate(() => {
       const body = document.body;
-      if (!body) return { text: '', elementCount: 0, sample: '' };
+      if (!body) return { textLength: 0, elementCount: 0 };
       const text = body.innerText || '';
       const allEls = document.querySelectorAll('*');
-      // Collect unique class names that contain interesting keywords
-      const interestingClasses = new Set();
-      allEls.forEach((el) => {
-        const cls = el.className;
-        if (typeof cls === 'string' && cls.length > 0) {
-          cls.split(/\s+/).forEach((c) => {
-            const lower = c.toLowerCase();
-            if (
-              lower.includes('message') ||
-              lower.includes('user') ||
-              lower.includes('human') ||
-              lower.includes('turn') ||
-              lower.includes('query') ||
-              lower.includes('chat') ||
-              lower.includes('prompt') ||
-              lower.includes('conversation')
-            ) {
-              interestingClasses.add(c);
-            }
-          });
-        }
-      });
       return {
         textLength: text.length,
         elementCount: allEls.length,
-        textSample: text.substring(0, 500),
-        interestingClasses: Array.from(interestingClasses).slice(0, 30),
       };
     });
-    console.log('[fetch-share] Debug — page info:', JSON.stringify(debugInfo, null, 2));
+    console.log('[fetch-share] Extraction failed:', JSON.stringify(debugInfo));
 
     return res.status(502).json({
       error:
         'Could not extract conversation messages. The link may be private, expired, or the page did not load properly.',
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error.';
-    console.error('[fetch-share] Puppeteer error:', message);
+    console.error('[fetch-share] Puppeteer error:', err?.name || 'UnknownError');
     return res.status(502).json({
-      error: `Could not load the shared conversation: ${message}`,
+      error: 'Could not load the shared conversation.',
     });
   } finally {
     if (page) await page.close().catch(() => {});
@@ -1508,7 +1467,7 @@ app.post('/api/chat/stream-full', requireAuth, rateLimit, async (req, res) => {
 // POST /api/count-tokens
 // Multi-provider token counting endpoint
 // ---------------------------------------------------------------------------
-app.post('/api/count-tokens', async (req, res) => {
+app.post('/api/count-tokens', requireAuth, rateLimit, async (req, res) => {
   const validation = validateTokenRequest(req.body);
   if (!validation.valid) {
     return res.status(validation.status).json({ error: validation.message });
