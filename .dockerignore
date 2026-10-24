@@ -8,6 +8,7 @@
 !validateTokenRequest.js
 !opsEvents.js
 !productionConfig.js
+!inferenceConfig.js
 !adapters/
 !adapters/**
 !fixtures/

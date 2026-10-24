@@ -268,6 +268,19 @@ describe.sequential('real Mentro container with isolated upstream fixtures', () 
     expect(end.data.done).toBe(true);
   });
 
+  it('reaches the replacement Together model when earlier providers are unavailable', async () => {
+    const events = await collectEvents(
+      await streamRequest('/api/chat/stream-full', '[fixture:together]')
+    );
+    expect(events.find((event) => event.name === 'end')?.data).toMatchObject({
+      provider: 'Together AI',
+      model: 'meta-models/Muse-Glimmer-30B',
+      content: 'Hello world',
+      done: true,
+    });
+    expect(events.some((event) => event.name === 'error')).toBe(false);
+  });
+
   it('reports provider refusal, exhausted fallback, truncated stream, and timeout without false success', async () => {
     for (const path of ['/api/chat/stream', '/api/chat/stream-full']) {
       for (const [marker, code] of [

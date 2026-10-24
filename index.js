@@ -122,80 +122,11 @@ app.use((req, res, next) => {
 const PORT = process.env.PORT || 3001;
 
 // ---------------------------------------------------------------------------
-// Inference provider config — four-tier chain:
-//
-//   Tier 1 (primary):  Cerebras free tier (gpt-oss-120b)
-//                      ~30 req/min, 1M tokens/day — free, no credit card.
-//                      ~3,000 tok/sec — fastest available inference.
-//                      Requires CEREBRAS_API_KEY.
-//
-//   Tier 2 (fallback): Groq free tier (llama-3.1-8b-instant)
-//                      30 req/min, 14,400 req/day — free.
-//                      Requires GROQ_API_KEY.
-//
-//   Tier 3 (fallback): Together AI paid (Llama-3.3-70B-Instruct-Turbo)
-//                      Dynamic limits, ~$0.10/1M tokens.
-//                      Requires TOGETHER_API_KEY.
-//
-// Each tier activates automatically when the previous returns any non-400/401
-// error. Auth failures (401) and bad requests (400) stop the chain immediately.
-//
-// Backward compat: if only GROQ_API_KEY is set, tier 1 = Groq, other tiers
-// are skipped — existing deployments keep working unchanged.
+// Configurable models, preserving Groq → Cerebras → Together fallback order.
+// Only providers with a configured key are enabled. See docs/inference-models.md.
 // ---------------------------------------------------------------------------
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const GROQ_BASE_URL = FIXTURE_ORIGIN || 'https://api.groq.com/openai/v1';
-// Instruct model (not a gpt-oss reasoning model). gpt-oss-20b only emitted
-// analysis-channel reasoning and never a final answer or tool calls, which
-// broke agentic/tool-using clients. llama-3.3-70b-versatile emits normal
-// final-channel content and honours format instructions ("reply with only
-// a fenced block"), returning finish_reason "stop" and usage stats.
-const GROQ_MODEL = 'llama-3.3-70b-versatile';
-
-const CEREBRAS_BASE_URL = FIXTURE_ORIGIN || 'https://api.cerebras.ai/v1';
-const CEREBRAS_MODEL = 'gpt-oss-120b';
-const TOGETHER_BASE_URL = FIXTURE_ORIGIN || 'https://api.together.xyz/v1';
-const TOGETHER_MODEL = 'meta-llama/Llama-3.3-70B-Instruct-Turbo';
-
-// Build the provider chain — each entry is { base, key, model, name }.
-// Only include a tier if its key is set. Falls back gracefully at runtime.
-//
-// Order: Groq (instruct) → Cerebras → Together AI. Groq is primary because it
-// serves an instruct model (llama-3.3-70b-versatile) that emits final-channel
-// content and honours format/tool instructions. The Cerebras tier runs a
-// gpt-oss reasoning model (gpt-oss-120b) — Cerebras's public endpoints only
-// offer gpt-oss and Qwen reasoning models, no instruct model — so it can emit
-// reasoning-only output on instruction-heavy/tool-using prompts and is kept as
-// a fast fallback rather than the primary. Together AI (also instruct) is the
-// final fallback.
-const INFERENCE_CHAIN = [];
-
-if (GROQ_API_KEY) {
-  INFERENCE_CHAIN.push({
-    name: 'Groq',
-    base: GROQ_BASE_URL,
-    key: GROQ_API_KEY,
-    model: GROQ_MODEL,
-  });
-}
-
-if (process.env.CEREBRAS_API_KEY) {
-  INFERENCE_CHAIN.push({
-    name: 'Cerebras',
-    base: CEREBRAS_BASE_URL,
-    key: process.env.CEREBRAS_API_KEY,
-    model: CEREBRAS_MODEL,
-  });
-}
-
-if (process.env.TOGETHER_API_KEY) {
-  INFERENCE_CHAIN.push({
-    name: 'Together AI',
-    base: TOGETHER_BASE_URL,
-    key: process.env.TOGETHER_API_KEY,
-    model: TOGETHER_MODEL,
-  });
-}
+const { inferenceChain } = require('./inferenceConfig');
+const INFERENCE_CHAIN = inferenceChain(process.env, FIXTURE_ORIGIN);
 
 // If none of the above keys are set, log a warning at startup.
 if (INFERENCE_CHAIN.length === 0) {
@@ -1026,7 +957,7 @@ app.get('/api/fetch-share', requireAuth, rateLimit, async (req, res) => {
 // ---------------------------------------------------------------------------
 // POST /api/chat/stream
 // Streams assistant response as SSE events.
-// Tries providers in INFERENCE_CHAIN order: Cerebras → Groq → Together AI → OCI Generative AI.
+// Tries providers in INFERENCE_CHAIN order: Groq → Cerebras → Together AI.
 // Each tier is attempted on 429 (rate limited) or 5xx (server error).
 // Auth failures (401/403) surface immediately without retrying.
 // ---------------------------------------------------------------------------

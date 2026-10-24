@@ -119,6 +119,17 @@ const server = http.createServer(async (req, res) => {
     }
     const marker = body.messages?.map((message) => message.content).join(' ') || '';
     const provider = req.headers.authorization;
+    const expectedModel = {
+      'Bearer fixture-groq': 'openai/gpt-oss-120b',
+      'Bearer fixture-cerebras': 'gpt-oss-120b',
+      'Bearer fixture-together': 'meta-models/Muse-Glimmer-30B',
+    }[provider];
+    if (expectedModel && body.model !== expectedModel) {
+      return json(res, 400, { error: { message: 'Unexpected configured fixture model' } });
+    }
+    if (marker.includes('[fixture:together]') && provider !== 'Bearer fixture-together') {
+      return json(res, 503, { error: { message: 'Earlier fixture tier unavailable' } });
+    }
     if (marker.includes('[fixture:bad-request]')) {
       return json(res, 400, { error: { message: 'Fixture rejected the request' } });
     }
